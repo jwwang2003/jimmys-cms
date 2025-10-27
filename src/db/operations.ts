@@ -1,5 +1,5 @@
 import { db } from './index';
-import { users } from './schema';
+import { users } from './schema/schema';
 import { eq } from 'drizzle-orm';
 
 // Create a new user

@@ -17,7 +17,7 @@ import dotenv from "dotenv";
 
 export default defineConfig({
     dialect: "sqlite",
-    schema: "./src/db/schema.ts",
+    schema: ["./src/db/schema", "./auth-schema.ts"],
     dbCredentials: {
         // For SQLite, Drizzle Kit expects a filesystem path
         url: process.env.SQLITE_URL!,
