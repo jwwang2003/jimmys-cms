@@ -2,7 +2,7 @@ import { Metadata } from "next";
 import { desc } from "drizzle-orm";
 
 import { db } from "@/db";
-import { user as userTable } from "@/db/schema/auth-schema";
+import { user as userTable } from "../../../../auth-schema";
 import { UserDirectoryTable } from "@/components/server-only/UserDirectoryTable";
 
 export const metadata: Metadata = {
