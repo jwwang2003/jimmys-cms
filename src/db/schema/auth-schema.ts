@@ -5,8 +5,6 @@ export const user = sqliteTable("user", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
-  username: text("username").notNull().unique(),
-  displayUsername: text("display_username"),
   emailVerified: integer("email_verified", { mode: "boolean" })
     .default(false)
     .notNull(),
@@ -18,10 +16,8 @@ export const user = sqliteTable("user", {
     .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
     .$onUpdate(() => /* @__PURE__ */ new Date())
     .notNull(),
-  role: text("role"),
-  banned: integer("banned", { mode: "boolean" }).default(false),
-  banReason: text("ban_reason"),
-  banExpires: integer("ban_expires", { mode: "timestamp_ms" }),
+  username: text("username").unique(),
+  displayUsername: text("display_username"),
 });
 
 export const session = sqliteTable("session", {
@@ -39,7 +35,6 @@ export const session = sqliteTable("session", {
   userId: text("user_id")
     .notNull()
     .references(() => user.id, { onDelete: "cascade" }),
-  impersonatedBy: text("impersonated_by"),
 });
 
 export const account = sqliteTable("account", {

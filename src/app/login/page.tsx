@@ -4,20 +4,99 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Alert,
+  Box,
   Button,
   Center,
   Container,
+  Group,
   Paper,
   PasswordInput,
+  Progress,
   Stack,
   Tabs,
   Text,
   TextInput,
 } from "@mantine/core";
+import { IconCheck, IconX } from "@tabler/icons-react";
 
 type FormMode = "login" | "register";
 
 const AUTO_EMAIL_DOMAIN = "users.local";
+
+function PasswordRequirement({ meets, label }: { meets: boolean; label: string }) {
+  return (
+    <Text component="div" c={meets ? "teal" : "red"} mt={5} size="sm">
+      <Center inline>
+        {meets ? <IconCheck size={14} stroke={1.5} /> : <IconX size={14} stroke={1.5} />}
+        <Box ml={7}>{label}</Box>
+      </Center>
+    </Text>
+  );
+}
+
+const requirements = [
+  { re: /[0-9]/, label: "Includes number" },
+  { re: /[a-z]/, label: "Includes lowercase letter" },
+  { re: /[A-Z]/, label: "Includes uppercase letter" },
+  { re: /[$&+,:;=?@#|'<>.^*()%!-_]/, label: "Includes special symbol" },
+];
+
+function getStrength(password: string) {
+  let multiplier = password.length > 5 ? 0 : 1;
+
+  requirements.forEach((requirement) => {
+    if (!requirement.re.test(password)) {
+      multiplier += 1;
+    }
+  });
+
+  return Math.max(100 - (100 / (requirements.length + 1)) * multiplier, 0);
+}
+
+type PasswordStrengthInputProps = {
+  value: string;
+  onChange: (value: string) => void;
+};
+
+function PasswordStrengthInput({ value, onChange }: PasswordStrengthInputProps) {
+  const strength = getStrength(value);
+  const checks = requirements.map((requirement, index) => (
+    <PasswordRequirement key={requirement.label} label={requirement.label} meets={requirement.re.test(value)} />
+  ));
+  const bars = Array(4)
+    .fill(0)
+    .map((_, index) => (
+      <Progress
+        styles={{ section: { transitionDuration: "0ms" } }}
+        value={value.length > 0 && index === 0 ? 100 : strength >= ((index + 1) / 4) * 100 ? 100 : 0}
+        color={strength > 80 ? "teal" : strength > 50 ? "yellow" : "red"}
+        key={index}
+        size={4}
+      />
+    ));
+
+  return (
+    <div>
+      <PasswordInput
+        placeholder="Create a password"
+        aria-label="Password"
+        id="password"
+        name="password"
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        required
+        autoComplete="new-password"
+      />
+
+      <Group gap={5} grow mt="xs" mb="md">
+        {bars}
+      </Group>
+
+      <PasswordRequirement label="Has at least 6 characters" meets={value.length > 5} />
+      {checks}
+    </div>
+  );
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -164,16 +243,20 @@ export default function LoginPage() {
                     </Text>
                   </div>
 
-                  <PasswordInput
-                    placeholder={mode === "login" ? "Password" : "Create a password"}
-                    aria-label="Password"
-                    id="password"
-                    name="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.currentTarget.value)}
-                    required
-                    autoComplete={mode === "login" ? "current-password" : "new-password"}
-                  />
+                  {mode === "login" ? (
+                    <PasswordInput
+                      placeholder="Password"
+                      aria-label="Password"
+                      id="password"
+                      name="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.currentTarget.value)}
+                      required
+                      autoComplete="current-password"
+                    />
+                  ) : (
+                    <PasswordStrengthInput value={password} onChange={setPassword} />
+                  )}
 
                   {mode === "register" && (
                     <PasswordInput

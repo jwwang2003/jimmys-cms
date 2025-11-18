@@ -28,6 +28,7 @@
     "@mantine/spotlight": "^8.3.0",
     "@mantine/ssr": "^6.0.22",
     "@mantine/tiptap": "^8.3.0",
+    "@tabler/icons-react": "^3.35.0",
     "@tiptap/extension-link": "^3.4.2",
     "@tiptap/pm": "^3.4.2",
     "@tiptap/react": "^3.4.2",
