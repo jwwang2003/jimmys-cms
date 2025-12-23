@@ -6,6 +6,7 @@ import { Dropzone } from "@mantine/dropzone";
 
 type S3Object = { key: string | null | undefined; size: number; lastModified: string | null; eTag: string | null };
 type Folder = { prefix?: string | null };
+const formatError = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 function fmtBytes(n: number) {
   if (!Number.isFinite(n)) return "-";
@@ -24,7 +25,6 @@ export default function DevStorageUI() {
   const [loading, setLoading] = useState(false);
   const [objects, setObjects] = useState<S3Object[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
-  const [nextToken, setNextToken] = useState<string | null>(null);
   const [bucketName, setBucketName] = useState<string>("");
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorKey, setEditorKey] = useState<string>("");
@@ -34,7 +34,7 @@ export default function DevStorageUI() {
   const [imageOpen, setImageOpen] = useState(false);
   const [imageKey, setImageKey] = useState("");
   const [imageSrc, setImageSrc] = useState("");
-  const dropRef = useRef<HTMLDivElement | null>(null);
+  const dropRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     // Load aliases and prefixes
@@ -49,12 +49,12 @@ export default function DevStorageUI() {
       const pKey = Object.keys(pf.prefixes || {}).find((k) => pf.prefixes[k] === p) || Object.keys(pf.prefixes || {})[0] || "";
       setPrefix(pKey || "");
     }).catch(() => void 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   const effectivePrefixLabel = useMemo(() => (prefix ? prefixes[prefix] || prefix : "(none)"), [prefix, prefixes]);
 
-  async function load(reset = true) {
+  async function load() {
     setLoading(true);
     try {
       const params = new URLSearchParams({ alias, search });
@@ -67,14 +67,13 @@ export default function DevStorageUI() {
       setBucketName(data.bucket || "");
       setFolders(data.folders || []);
       setObjects(data.objects || []);
-      setNextToken(data.nextContinuationToken || null);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    load(true);
+    load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [alias, prefix, path, search]);
 
@@ -82,7 +81,7 @@ export default function DevStorageUI() {
     const params = new URLSearchParams({ alias, key: k });
     const res = await fetch(`/api/dev/storage?${params.toString()}`);
     if (!res.ok) {
-      // eslint-disable-next-line no-alert
+       
       alert(`Failed to fetch object: ${await res.text()}`);
       return;
     }
@@ -104,7 +103,7 @@ export default function DevStorageUI() {
       return;
     }
 
-    // eslint-disable-next-line no-alert
+     
     alert(`Binary or non-text content (type: ${data.contentType}). Download and edit locally.`);
   }
 
@@ -118,9 +117,8 @@ export default function DevStorageUI() {
       });
       if (!res.ok) throw new Error(await res.text());
       setEditorOpen(false);
-    } catch (e: any) {
-      // eslint-disable-next-line no-alert
-      alert(`Save failed: ${e?.message || String(e)}`);
+    } catch (err: unknown) {
+      alert(`Save failed: ${formatError(err)}`);
     } finally {
       setEditorSaving(false);
     }
@@ -131,7 +129,7 @@ export default function DevStorageUI() {
     const params = new URLSearchParams({ alias, key: k });
     const res = await fetch(`/api/dev/storage?${params.toString()}`, { method: "DELETE" });
     if (!res.ok) {
-      // eslint-disable-next-line no-alert
+       
       alert(`Delete failed: ${await res.text()}`);
     } else {
       load();
@@ -147,7 +145,7 @@ export default function DevStorageUI() {
       body: JSON.stringify({ action: "rename", alias, fromKey: k, toKey: name }),
     });
     if (!res.ok) {
-      // eslint-disable-next-line no-alert
+       
       alert(`Rename failed: ${await res.text()}`);
     } else {
       load();
@@ -163,7 +161,7 @@ export default function DevStorageUI() {
     for (const f of files) fd.append("file", f, f.name);
     const res = await fetch("/api/dev/storage", { method: "POST", body: fd });
     if (!res.ok) {
-      // eslint-disable-next-line no-alert
+       
       alert(`Upload failed: ${await res.text()}`);
     } else {
       load();
@@ -215,14 +213,14 @@ export default function DevStorageUI() {
           <Dropzone openRef={dropRef} onDrop={handleUpload} radius="md" accept={[]}>
             <Group justify="space-between">
               <Text>Drop files here to upload</Text>
-              <Button variant="subtle" onClick={() => dropRef.current?.click?.()}>Choose files</Button>
+              <Button variant="subtle" onClick={() => dropRef.current?.()}>Choose files</Button>
             </Group>
           </Dropzone>
 
           <Flex gap="xs" align="center">
             <Text fw={500}>Path:</Text>
             <Anchor c="blue" onClick={() => setPath("")}>root</Anchor>
-            {crumbs.map((c, i) => (
+            {crumbs.map((c) => (
               <Group key={c.to} gap={6} align="center">
                 <Text>/</Text>
                 <Anchor onClick={() => setPath(c.to)}>{c.label}</Anchor>

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 // Load environment variables for Jest tests with two modes:
 // - dev mode: load .env (base) then .env.development
 // - prod mode: load .env (base) then .env.production

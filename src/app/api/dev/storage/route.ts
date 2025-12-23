@@ -1,3 +1,4 @@
+import type { Readable } from "node:stream";
 import { NextRequest } from "next/server";
 import {
     DeleteObjectCommand,
@@ -9,6 +10,18 @@ import {
 } from "@aws-sdk/client-s3";
 import { buckets, getS3, buildKey, prefixes as knownPrefixes } from "@/lib/s3";
 
+type BodyToBufferInput =
+    | ReadableStream<Uint8Array>
+    | AsyncIterable<Uint8Array | Buffer | string>
+    | Readable
+    | Uint8Array
+    | ArrayBuffer
+    | string
+    | null
+    | undefined;
+
+const formatError = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
 function isDev() {
     return process.env.NODE_ENV !== "production";
 }
@@ -17,11 +30,11 @@ function devOnlyResponse() {
     return new Response("Forbidden: dev-only endpoint", { status: 403 });
 }
 
-async function bodyToBuffer(body: any): Promise<Buffer> {
+async function bodyToBuffer(body: BodyToBufferInput): Promise<Buffer> {
     if (!body) return Buffer.alloc(0);
     // Web ReadableStream
-    if (typeof body.getReader === "function") {
-        const reader = body.getReader();
+    if (typeof (body as ReadableStream<Uint8Array>).getReader === "function") {
+        const reader = (body as ReadableStream<Uint8Array>).getReader();
         const parts: Uint8Array[] = [];
         while (true) {
             const { value, done } = await reader.read();
@@ -31,20 +44,22 @@ async function bodyToBuffer(body: any): Promise<Buffer> {
         return Buffer.concat(parts.map((p) => Buffer.from(p)));
     }
     // Async iterator (Node stream in modern Node supports this)
-    if (typeof body[Symbol.asyncIterator] === "function") {
+    if (typeof (body as AsyncIterable<Uint8Array | Buffer | string>)[Symbol.asyncIterator] === "function") {
         const parts: Buffer[] = [];
-        for await (const chunk of body as AsyncIterable<any>) {
+        for await (const chunk of body as AsyncIterable<Uint8Array | Buffer | string>) {
             parts.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         }
         return Buffer.concat(parts);
     }
     // Node readable stream (fallback)
-    if (typeof body.on === "function") {
+    if (typeof (body as Readable).on === "function") {
         return await new Promise<Buffer>((resolve, reject) => {
             const parts: Buffer[] = [];
-            body.on("data", (c: any) => parts.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-            body.on("end", () => resolve(Buffer.concat(parts)));
-            body.on("error", reject);
+            (body as Readable).on("data", (c: Buffer | string | Uint8Array) =>
+                parts.push(Buffer.isBuffer(c) ? c : Buffer.from(c))
+            );
+            (body as Readable).on("end", () => resolve(Buffer.concat(parts)));
+            (body as Readable).on("error", reject);
         });
     }
     // Direct bytes
@@ -88,7 +103,7 @@ export async function GET(req: NextRequest) {
 
         if (key) {
             const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-            const buf = await bodyToBuffer(res.Body as any);
+            const buf = await bodyToBuffer(res.Body as BodyToBufferInput);
             const contentType = (res.ContentType || "application/octet-stream").toString();
             const size = Number(res.ContentLength || buf.length);
 
@@ -182,8 +197,8 @@ export async function GET(req: NextRequest) {
             metaFilterApplied,
             headRequests,
         });
-    } catch (err: any) {
-        return new Response(`Error: ${err?.message || String(err)}`, { status: 500 });
+    } catch (err: unknown) {
+        return new Response(`Error: ${formatError(err)}`, { status: 500 });
     }
 }
 
@@ -202,8 +217,8 @@ export async function PUT(req: NextRequest) {
             new PutObjectCommand({ Bucket: bucket, Key: key, Body: content, ContentType: contentType })
         );
         return Response.json({ ok: true, bucket, key });
-    } catch (err: any) {
-        return new Response(`Error: ${err?.message || String(err)}`, { status: 500 });
+    } catch (err: unknown) {
+        return new Response(`Error: ${formatError(err)}`, { status: 500 });
     }
 }
 
@@ -244,7 +259,7 @@ export async function POST(req: NextRequest) {
         const { client, bucket } = getS3(alias);
 
         const files: File[] = [];
-        for (const [k, v] of form.entries()) {
+        for (const [, v] of form.entries()) {
             if (v instanceof File) files.push(v);
         }
         if (files.length === 0) return new Response("No files provided", { status: 400 });
@@ -259,8 +274,8 @@ export async function POST(req: NextRequest) {
         }
 
         return Response.json({ ok: true, uploaded: files.map((f) => f.name), bucket, baseKey: baseKey || "" });
-    } catch (err: any) {
-        return new Response(`Error: ${err?.message || String(err)}`, { status: 500 });
+    } catch (err: unknown) {
+        return new Response(`Error: ${formatError(err)}`, { status: 500 });
     }
 }
 
@@ -272,7 +287,7 @@ export async function DELETE(req: NextRequest) {
         const { client, bucket } = getS3(alias);
         await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
         return Response.json({ ok: true, bucket, key });
-    } catch (err: any) {
-        return new Response(`Error: ${err?.message || String(err)}`, { status: 500 });
+    } catch (err: unknown) {
+        return new Response(`Error: ${formatError(err)}`, { status: 500 });
     }
 }

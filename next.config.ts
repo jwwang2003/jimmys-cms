@@ -8,6 +8,8 @@ const nextConfig: NextConfig = {
     ADMIN_USERNAME: process.env.ADMIN_USERNAME ?? "admin",
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD ?? "admin",
   },
+  // Produce standalone output so the runtime bundle carries only the deps it needs
+  output: "standalone",
 };
 
 export default nextConfig;

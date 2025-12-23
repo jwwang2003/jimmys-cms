@@ -60,7 +60,7 @@ type PasswordStrengthInputProps = {
 
 function PasswordStrengthInput({ value, onChange }: PasswordStrengthInputProps) {
   const strength = getStrength(value);
-  const checks = requirements.map((requirement, index) => (
+  const checks = requirements.map((requirement) => (
     <PasswordRequirement key={requirement.label} label={requirement.label} meets={requirement.re.test(value)} />
   ));
   const bars = Array(4)

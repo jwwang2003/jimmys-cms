@@ -1,10 +1,22 @@
-import { db } from './index';
-import { users } from './schema/schema';
+import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
+import { db } from './index';
+import { user as users } from '../../auth-schema';
+
+type UserRole = "admin" | "creator" | "user" | "guest";
 
 // Create a new user
-export async function createUser(username: string, password: string, role: string) {
-    await db.insert(users).values({ username, password, role });
+export async function createUser(username: string, password: string, role: UserRole = "user") {
+    const email = `${username}@users.local`;
+    await db.insert(users).values({
+        id: randomUUID(),
+        name: username,
+        email,
+        username,
+        displayUsername: username,
+        password,
+        role,
+    });
 }
 
 // Find a user by username
