@@ -11,6 +11,12 @@ export async function verifyS3OnStartup() {
     if (hasRun) return;
     hasRun = true;
 
+    const shouldCheckInDev = process.env.CHECK_S3_ON_STARTUP === "1" || process.env.FAIL_ON_STARTUP_S3 === "1";
+    if (process.env.NODE_ENV !== "production" && !shouldCheckInDev) {
+        console.log("[startup] S3 check skipped in development. Set CHECK_S3_ON_STARTUP=1 to enable it.");
+        return;
+    }
+
     // Determine set of buckets to check; include default if present
     const entries = Object.entries(buckets);
     if (entries.length === 0 && defaultBucket) {

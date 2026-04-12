@@ -3,6 +3,7 @@ import {
     index,
     integer,
     primaryKey,
+    real,
     sqliteTable,
     text,
     uniqueIndex,
@@ -132,6 +133,13 @@ export const storageObjects = sqliteTable(
         syncedAt: integer("synced_at", { mode: "timestamp_ms" })
             .default(timestamp())
             .notNull(),
+        syncStatus: text("sync_status", {
+            enum: ["discovered", "normalized", "warning", "invalid"],
+        })
+            .default("discovered")
+            .notNull(),
+        warningsJson: text("warnings_json").default("[]").notNull(),
+        lastError: text("last_error"),
         assetId: integer("asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
         createdAt: integer("created_at", { mode: "timestamp_ms" })
             .default(timestamp())
@@ -230,6 +238,9 @@ export const collections = sqliteTable(
         id: integer("id").primaryKey({ autoIncrement: true }),
         title: text("title").notNull(),
         slug: text("slug").notNull(),
+        kind: text("kind", { enum: ["album", "collection"] })
+            .default("collection")
+            .notNull(),
         description: text("description"),
         coverAssetId: integer("cover_asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
         createdAt: integer("created_at", { mode: "timestamp_ms" })
@@ -241,6 +252,45 @@ export const collections = sqliteTable(
             .notNull(),
     },
     (table) => [uniqueIndex("collections_slug_unique").on(table.slug)]
+);
+
+export const assetLocations = sqliteTable(
+    "asset_locations",
+    {
+        id: integer("id").primaryKey({ autoIncrement: true }),
+        assetId: integer("asset_id")
+            .notNull()
+            .references(() => mediaAssets.id, { onDelete: "cascade" }),
+        contentType: text("content_type", { enum: ["media", "article"] })
+            .default("media")
+            .notNull(),
+        label: text("label"),
+        rawAddress: text("raw_address"),
+        formattedAddress: text("formatted_address"),
+        googlePlaceId: text("google_place_id"),
+        lat: real("lat"),
+        lng: real("lng"),
+        isPrimary: integer("is_primary", { mode: "boolean" }).default(false).notNull(),
+        source: text("source").default("manual").notNull(),
+        sourceRef: text("source_ref"),
+        status: text("status", {
+            enum: ["pending", "matched", "geocoded", "failed"],
+        })
+            .default("pending")
+            .notNull(),
+        rawResponseJson: text("raw_response_json"),
+        createdAt: integer("created_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .notNull(),
+        updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .$onUpdate(() => new Date())
+            .notNull(),
+    },
+    (table) => [
+        index("asset_locations_asset_idx").on(table.assetId),
+        index("asset_locations_primary_idx").on(table.assetId, table.isPrimary),
+    ]
 );
 
 export const collectionAssets = sqliteTable(

@@ -11,7 +11,7 @@ import dotenv from "dotenv";
         `.env`,
     ];
     for (const file of order) {
-        dotenv.config({ path: file, override: true });
+        dotenv.config({ path: file });
     }
 })();
 

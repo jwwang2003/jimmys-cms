@@ -53,6 +53,16 @@ pnpm drizzle-kit up
 pnpm drizzle-kit studio
 ```
 
+Project shortcuts:
+```
+pnpm run db:generate
+pnpm run db:migrate
+pnpm run db:push
+pnpm run db:studio
+```
+
+Use `db:migrate` for normal schema evolution from the versioned files in `drizzle/`. Use `db:push` only for fast local schema sync when you intentionally want Drizzle Kit to reconcile the current database directly.
+
 ---
 
 #### Auth
@@ -81,6 +91,32 @@ So far the only AWS service used are the S3 buckets.
     - [Install AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
     - [Logging in via the CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html)
 
+## Simple CMS Login
+
+The app now includes a simple signed-cookie login flow separate from Better Auth's stock UI.
+
+- `admin` is bootstrapped automatically from `ADMIN_USERNAME` and `ADMIN_PASSWORD`
+- `user` accounts can register with a password
+- `guest` accounts can register with or without a password
+- `/login` also supports one-click passwordless guest access
+- Guests are read-only inside the CMS; admins and users can upload, sync, and edit media
+
+The session cookie is signed with `SESSION_SECRET`. Set this in production.
+
+## Geolocation Import
+
+Locations can now be imported from the admin sync workspace using pasted CSV data.
+
+- Route: `/admin/media/sync`
+- Import API: `/api/admin/media/location-import`
+- Supported CSV columns: `asset_id`, `object_key`, `address`, `label`, `formatted_address`, `lat`, `lng`
+- Matching prefers `asset_id`, then falls back to `object_key`
+- Images replace their primary location on import
+- Videos can accumulate multiple imported locations, with the latest import marked primary
+
+If `GOOGLE_MAPS_API_KEY` is configured, imported rows without coordinates are geocoded through Google Maps. If the key is missing,
+rows still import and are stored as `pending` so the workflow stays tolerant.
+
 ## Media Library Schema
 
 All CMS media metadata is modeled with Drizzle (see `src/db/schema/schema.ts`). The binary objects live in S3, while SQLite only
@@ -95,8 +131,17 @@ tracks metadata and relationships:
 - `tags` and `media_tags` provide a reusable tagging vocabulary with many-to-many links.
 - `media_attributes` captures arbitrary key/value metadata (namespaced) for future frontends to query without schema churn.
 - `collections` and `collection_assets` let you curate playlists/boards tied to assets.
+- `asset_locations` stores normalized geolocation records for assets, preserving imported address text and primary-location state.
 
 These tables are intentionally metadata-only. Each row references the S3 object via `storage_id` + `object_key`, so multiple
 frontends can render content while S3 holds the raw binaries.
+
+## Admin Routes
+
+- `/admin` dashboard with media, warning, invalid, and missing-location counts
+- `/admin/media` asset browser plus upload flow
+- `/admin/media/[id]` asset editor for tags, collections, visibility, status, and primary location
+- `/admin/media/sync` tolerant S3 sync workspace and review queue
+- `/dev/storage` remains a dev-only bucket browser for debugging and operations
 
 # References

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Anchor, Badge, Box, Button, Container, Flex, Group, LoadingOverlay, Modal, Paper, ScrollArea, Select, Stack, Table, Text, TextInput, Textarea, Title } from "@mantine/core";
+import { Anchor, Badge, Box, Button, Container, Flex, Group, LoadingOverlay, Modal, Paper, ScrollArea, Select, Stack, Table, TableTbody, TableTd, TableTh, TableThead, TableTr, Text, TextInput, Textarea, Title } from "@mantine/core";
 import { Dropzone } from "@mantine/dropzone";
 
 type S3Object = { key: string | null | undefined; size: number; lastModified: string | null; eTag: string | null };
@@ -230,44 +230,44 @@ export default function DevStorageUI() {
 
           <ScrollArea h={480} offsetScrollbars>
             <Table stickyHeader striped withRowBorders withColumnBorders>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Key / Folder</Table.Th>
-                  <Table.Th>Size</Table.Th>
-                  <Table.Th>Last Modified</Table.Th>
-                  <Table.Th>Actions</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
+              <TableThead>
+                <TableTr>
+                  <TableTh>Key / Folder</TableTh>
+                  <TableTh>Size</TableTh>
+                  <TableTh>Last Modified</TableTh>
+                  <TableTh>Actions</TableTh>
+                </TableTr>
+              </TableThead>
+              <TableTbody>
                 {folders.map((f) => {
                   const p = (f.prefix || "").replace(/\/+$/, "");
                   const rel = p.split("/").pop() || p;
                   return (
-                    <Table.Tr key={`f:${p}`}>
-                      <Table.Td>
+                    <TableTr key={`f:${p}`}>
+                      <TableTd>
                         <Anchor onClick={() => setPath(p)}>{rel}/</Anchor>
-                      </Table.Td>
-                      <Table.Td>-</Table.Td>
-                      <Table.Td>-</Table.Td>
-                      <Table.Td>-</Table.Td>
-                    </Table.Tr>
+                      </TableTd>
+                      <TableTd>-</TableTd>
+                      <TableTd>-</TableTd>
+                      <TableTd>-</TableTd>
+                    </TableTr>
                   );
                 })}
                 {objects.map((o) => (
-                  <Table.Tr key={o.key || Math.random()}>
-                    <Table.Td>{o.key}</Table.Td>
-                    <Table.Td>{fmtBytes(o.size)}</Table.Td>
-                    <Table.Td>{o.lastModified ? new Date(o.lastModified).toLocaleString() : ""}</Table.Td>
-                    <Table.Td>
+                  <TableTr key={o.key || Math.random()}>
+                    <TableTd>{o.key}</TableTd>
+                    <TableTd>{fmtBytes(o.size)}</TableTd>
+                    <TableTd>{o.lastModified ? new Date(o.lastModified).toLocaleString() : ""}</TableTd>
+                    <TableTd>
                       <Group gap={6}>
                         <Button size="xs" variant="light" onClick={() => o.key && openEditor(o.key)}>View/Edit</Button>
                         <Button size="xs" variant="light" color="gray" onClick={() => o.key && renameKey(o.key)}>Rename</Button>
                         <Button size="xs" variant="light" color="red" onClick={() => o.key && deleteKey(o.key)}>Delete</Button>
                       </Group>
-                    </Table.Td>
-                  </Table.Tr>
+                    </TableTd>
+                  </TableTr>
                 ))}
-              </Table.Tbody>
+              </TableTbody>
             </Table>
           </ScrollArea>
         </Stack>

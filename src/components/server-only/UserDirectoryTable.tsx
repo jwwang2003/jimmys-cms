@@ -1,6 +1,6 @@
 "use client";
 
-import { Anchor, Badge, Card, Group, Paper, Stack, Table, Text, Title } from "@mantine/core";
+import { Anchor, Badge, Card, Group, Paper, Stack, Table, TableTbody, TableTd, TableTh, TableThead, TableTr, Text, Title } from "@mantine/core";
 
 type SerializableUser = {
   id: string;
@@ -44,46 +44,46 @@ export function UserDirectoryTable({ users }: Props) {
 
       <Paper withBorder p="md" radius="lg" shadow="sm">
         <Table highlightOnHover verticalSpacing="md">
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Name</Table.Th>
-              <Table.Th>Email</Table.Th>
-              <Table.Th>Status</Table.Th>
-              <Table.Th>Created</Table.Th>
-              <Table.Th>Updated</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
+          <TableThead>
+            <TableTr>
+              <TableTh>Name</TableTh>
+              <TableTh>Email</TableTh>
+              <TableTh>Status</TableTh>
+              <TableTh>Created</TableTh>
+              <TableTh>Updated</TableTh>
+            </TableTr>
+          </TableThead>
+          <TableTbody>
             {users.length === 0 && (
-              <Table.Tr>
-                <Table.Td colSpan={5}>
+              <TableTr>
+                <TableTd colSpan={5}>
                   <Text ta="center" c="dimmed">
                     No users found in the database.
                   </Text>
-                </Table.Td>
-              </Table.Tr>
+                </TableTd>
+              </TableTr>
             )}
             {users.map((record) => (
-              <Table.Tr key={record.id}>
-                <Table.Td>
+              <TableTr key={record.id}>
+                <TableTd>
                   <Stack gap={0}>
                     <Text fw={600}>{record.name}</Text>
                     <Text size="sm" c="dimmed">
                       {record.id}
                     </Text>
                   </Stack>
-                </Table.Td>
-                <Table.Td>{record.email}</Table.Td>
-                <Table.Td>
+                </TableTd>
+                <TableTd>{record.email}</TableTd>
+                <TableTd>
                   <Badge color={record.emailVerified ? "green" : "yellow"} variant="light">
                     {record.emailVerified ? "Verified" : "Pending"}
                   </Badge>
-                </Table.Td>
-                <Table.Td>{formatDate(record.createdAt)}</Table.Td>
-                <Table.Td>{formatDate(record.updatedAt)}</Table.Td>
-              </Table.Tr>
+                </TableTd>
+                <TableTd>{formatDate(record.createdAt)}</TableTd>
+                <TableTd>{formatDate(record.updatedAt)}</TableTd>
+              </TableTr>
             ))}
-          </Table.Tbody>
+          </TableTbody>
         </Table>
       </Paper>
 

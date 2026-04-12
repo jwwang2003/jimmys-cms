@@ -23,6 +23,11 @@ import {
   SimpleGrid,
   Stack,
   Table,
+  TableTbody,
+  TableTd,
+  TableTh,
+  TableThead,
+  TableTr,
   Text,
   TextInput,
   Title,
@@ -235,40 +240,40 @@ export default function AdminUserManagementPage() {
 
             <ScrollArea>
               <Table striped highlightOnHover verticalSpacing="md">
-                <Table.Thead>
-                  <Table.Tr>
-                    <Table.Th w="20%">User</Table.Th>
-                    <Table.Th>Role</Table.Th>
-                    <Table.Th>Status</Table.Th>
-                    <Table.Th>Tags</Table.Th>
-                    <Table.Th>Media</Table.Th>
-                    <Table.Th>Location</Table.Th>
-                    <Table.Th>Last activity</Table.Th>
-                    <Table.Th />
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
+                <TableThead>
+                  <TableTr>
+                    <TableTh w="20%">User</TableTh>
+                    <TableTh>Role</TableTh>
+                    <TableTh>Status</TableTh>
+                    <TableTh>Tags</TableTh>
+                    <TableTh>Media</TableTh>
+                    <TableTh>Location</TableTh>
+                    <TableTh>Last activity</TableTh>
+                    <TableTh />
+                  </TableTr>
+                </TableThead>
+                <TableTbody>
                   {filteredUsers.map((user) => (
-                    <Table.Tr key={user.id}>
-                      <Table.Td>
+                    <TableTr key={user.id}>
+                      <TableTd>
                         <Stack gap={0}>
                           <Text fw={600}>{user.username}</Text>
                           <Text size="sm" c="dimmed">
                             {user.email}
                           </Text>
                         </Stack>
-                      </Table.Td>
-                      <Table.Td>
+                      </TableTd>
+                      <TableTd>
                         <Badge color={ROLE_COLORS[user.role]} variant="light">
                           {ROLE_LABELS[user.role]}
                         </Badge>
-                      </Table.Td>
-                      <Table.Td>
+                      </TableTd>
+                      <TableTd>
                         <Badge color={STATUS_COLORS[user.status]} variant="light">
                           {user.status}
                         </Badge>
-                      </Table.Td>
-                      <Table.Td>
+                      </TableTd>
+                      <TableTd>
                         <Group gap={6}>
                           {user.tags.map((tag) => (
                             <Badge key={tag} variant="outline" color="gray" radius="sm">
@@ -276,39 +281,39 @@ export default function AdminUserManagementPage() {
                             </Badge>
                           ))}
                         </Group>
-                      </Table.Td>
-                      <Table.Td>
+                      </TableTd>
+                      <TableTd>
                         <Text fw={600}>{user.mediaCount}</Text>
                         <Text size="xs" c="dimmed">
                           items published
                         </Text>
-                      </Table.Td>
-                      <Table.Td>
+                      </TableTd>
+                      <TableTd>
                         <Text>{user.location ?? "—"}</Text>
-                      </Table.Td>
-                      <Table.Td>
+                      </TableTd>
+                      <TableTd>
                         <Text>{user.lastActivity}</Text>
-                      </Table.Td>
-                      <Table.Td>
+                      </TableTd>
+                      <TableTd>
                         <ActionIcon variant="subtle" aria-label={`Actions for ${user.username}`}>
                           <DotsIcon />
                         </ActionIcon>
-                      </Table.Td>
-                    </Table.Tr>
+                      </TableTd>
+                    </TableTr>
                   ))}
                   {filteredUsers.length === 0 && (
-                    <Table.Tr>
-                      <Table.Td colSpan={8}>
+                    <TableTr>
+                      <TableTd colSpan={8}>
                         <Stack align="center" py="xl" gap="xs">
                           <Text fw={600}>No users match the current filters</Text>
                           <Text size="sm" c="dimmed">
                             Adjust the role or status filter to continue.
                           </Text>
                         </Stack>
-                      </Table.Td>
-                    </Table.Tr>
+                      </TableTd>
+                    </TableTr>
                   )}
-                </Table.Tbody>
+                </TableTbody>
               </Table>
             </ScrollArea>
           </Stack>

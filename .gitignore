@@ -45,3 +45,9 @@ drizzle
 
 # SQL & DB
 *.db
+
+# local git worktrees
+.worktrees/
+
+# local reference project
+simple-cms/

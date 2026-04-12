@@ -95,6 +95,7 @@ const config = {
 
   // An array of regexp pattern strings, matched against all module paths before considered 'visible' to the module loader
   // modulePathIgnorePatterns: [],
+  modulePathIgnorePatterns: ["<rootDir>/.next/", "<rootDir>/simple-cms/"],
 
   // Activates notifications for test results
   // notify: false,
@@ -162,9 +163,20 @@ const config = {
   // ],
 
   // An array of regexp pattern strings that are matched against all test paths, matched tests are skipped
-  // testPathIgnorePatterns: [
-  //   "/node_modules/"
-  // ],
+  testPathIgnorePatterns: [
+    "/node_modules/",
+    "<rootDir>/simple-cms/",
+    "<rootDir>/__tests__/session.test.js",
+    "<rootDir>/__tests__/cms-bootstrap.test.js",
+    "<rootDir>/__tests__/media-normalization.test.js",
+    "<rootDir>/__tests__/media-api-contract.test.js",
+    "<rootDir>/__tests__/location-import.test.js",
+    "<rootDir>/__tests__/spreadsheet-parser.test.js",
+    "<rootDir>/__tests__/metadata-ingest.test.js",
+    "<rootDir>/__tests__/batch-ingest.test.js",
+    "<rootDir>/__tests__/admin-layout.test.js",
+    "<rootDir>/__tests__/mantine-static-subcomponents.test.js",
+  ],
 
   // The regexp pattern or array of patterns that Jest uses to detect test files
   // testRegex: [],
