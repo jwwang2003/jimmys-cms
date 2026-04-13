@@ -43,7 +43,13 @@ export function MediaUploadForm({ editable }: { editable: boolean }) {
   }
 
   return (
-    <Paper withBorder radius="lg" p="lg">
+    <Paper
+      withBorder
+      radius="lg"
+      p="md"
+      bg="rgba(18, 20, 26, 0.92)"
+      style={{ borderColor: "rgba(255, 255, 255, 0.08)" }}
+    >
       <Stack gap="sm">
         <Text fw={600}>Upload media</Text>
         {!editable && <Alert color="yellow" variant="light">Guests cannot upload or edit media.</Alert>}

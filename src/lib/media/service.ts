@@ -1,24 +1,47 @@
-import { ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
+import type { Readable } from "node:stream";
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
+import { randomUUID } from "node:crypto";
+import { extname } from "node:path";
 
+import { geocodeAddress, hasGoogleMapsKey } from "@/lib/google-maps";
 import { buildKey, getS3 } from "@/lib/s3";
+import { extractPhotoExif } from "./exif";
 import { verifyS3ObjectIntegrity } from "./integrity";
 import { classifyStorageObject } from "./normalization";
 import {
+    applyGeocodeToLocation,
     archiveMediaAsset,
+    getRefreshableLocationForAsset,
     getDashboardStats,
     getMediaAssetById,
+    listRefreshableLocations,
+    listPendingLocationConflicts,
     listMediaAssets,
     listAssetsForIntegrity,
+    markLocationGeocodeFailed,
+    reconcileStoredExifLocation,
     listStorageReviewItems,
     permanentlyDeleteMediaAsset,
     restoreMediaAsset,
+    resolveAssetLocationConflict,
+    upsertPhotoExif,
     setAssetIntegrity,
     trashMediaAsset,
     updateMediaAsset,
     upsertMediaAssetFromObject,
     upsertStorageObject,
 } from "./repository";
-import type { AssetUpdateInput } from "./types";
+import type { AssetUpdateInput, LocationConflictResolution } from "./types";
+
+type BodyToBufferInput =
+    | ReadableStream<Uint8Array>
+    | AsyncIterable<Uint8Array | Buffer | string>
+    | Readable
+    | Uint8Array
+    | ArrayBuffer
+    | string
+    | null
+    | undefined;
 
 function objectUrlFromKey(storageId: string, key: string) {
     const { bucket, region } = getS3(storageId);
@@ -35,6 +58,76 @@ function folderTypeForMediaType(mediaType: "image" | "video" | "other") {
     return "misc" as const;
 }
 
+function normalizeExtension(fileName: string) {
+    const ext = extname(fileName).toLowerCase();
+    return ext || ".bin";
+}
+
+function determineManagedMediaType(fileName: string, mimeType?: string | null) {
+    if (mimeType) {
+        if (mimeType.startsWith("image/")) return "image" as const;
+        if (mimeType.startsWith("video/")) return "video" as const;
+    }
+    const extension = normalizeExtension(fileName);
+    if ([".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"].includes(extension)) {
+        return "image" as const;
+    }
+    if ([".mp4", ".mov", ".webm", ".m4v"].includes(extension)) {
+        return "video" as const;
+    }
+    return "other" as const;
+}
+
+function buildManagedObjectKey(
+    mediaType: "image" | "video" | "other",
+    fileName: string,
+    prefix: "content" | "media" | "public" | "meta",
+    path?: string
+) {
+    const suffix = `${randomUUID()}${normalizeExtension(fileName)}`;
+    if (mediaType === "image") {
+        return buildKey("content", "images", suffix);
+    }
+    if (mediaType === "video") {
+        return buildKey("media", "videos", suffix);
+    }
+    return buildKey(prefix, path || "", suffix);
+}
+
+async function bodyToBuffer(body: BodyToBufferInput): Promise<Buffer> {
+    if (!body) return Buffer.alloc(0);
+    if (typeof (body as ReadableStream<Uint8Array>).getReader === "function") {
+        const reader = (body as ReadableStream<Uint8Array>).getReader();
+        const parts: Uint8Array[] = [];
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value) parts.push(value);
+        }
+        return Buffer.concat(parts.map((part) => Buffer.from(part)));
+    }
+    if (typeof (body as AsyncIterable<Uint8Array | Buffer | string>)[Symbol.asyncIterator] === "function") {
+        const parts: Buffer[] = [];
+        for await (const chunk of body as AsyncIterable<Uint8Array | Buffer | string>) {
+            parts.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        return Buffer.concat(parts);
+    }
+    if (typeof (body as Readable).on === "function") {
+        return await new Promise<Buffer>((resolve, reject) => {
+            const parts: Buffer[] = [];
+            (body as Readable).on("data", (chunk: Buffer | string | Uint8Array) =>
+                parts.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+            );
+            (body as Readable).on("end", () => resolve(Buffer.concat(parts)));
+            (body as Readable).on("error", reject);
+        });
+    }
+    if (body instanceof Uint8Array) return Buffer.from(body);
+    if (body instanceof ArrayBuffer) return Buffer.from(new Uint8Array(body));
+    return Buffer.from(String(body));
+}
+
 export async function uploadMediaAsset(input: {
     storageId?: string;
     prefix?: "content" | "media" | "public" | "meta";
@@ -46,7 +139,8 @@ export async function uploadMediaAsset(input: {
 }) {
     const storageId = input.storageId || "default";
     const prefix = input.prefix || "media";
-    const key = buildKey(prefix, input.path || "", input.fileName);
+    const mediaTypeHint = determineManagedMediaType(input.fileName, input.mimeType);
+    const key = buildManagedObjectKey(mediaTypeHint, input.fileName, prefix, input.path);
     const { client, bucket } = getS3(storageId);
     await client.send(
         new PutObjectCommand({
@@ -62,6 +156,16 @@ export async function uploadMediaAsset(input: {
         mimeType: input.mimeType,
         sizeBytes: input.bytes.byteLength,
     });
+    let exifWarning = false;
+    let photoExif = null;
+    if (classification.mediaType === "image") {
+        try {
+            photoExif = extractPhotoExif(input.bytes);
+        } catch {
+            exifWarning = true;
+            classification.warnings.push("exif parse failed");
+        }
+    }
 
     const objectUrl = objectUrlFromKey(storageId, key);
     let assetId: number | null = null;
@@ -75,8 +179,18 @@ export async function uploadMediaAsset(input: {
             mimeType: input.mimeType,
             sizeBytes: input.bytes.byteLength,
             createdBy: input.createdBy,
+            width: photoExif?.pixelWidth ?? null,
+            height: photoExif?.pixelHeight ?? null,
             warnings: classification.warnings,
+            filename: input.fileName,
         });
+    }
+
+    if (assetId && photoExif) {
+        upsertPhotoExif(assetId, photoExif);
+        reconcileStoredExifLocation(assetId);
+    } else if (assetId && exifWarning) {
+        reconcileStoredExifLocation(assetId);
     }
 
     upsertStorageObject({
@@ -137,6 +251,16 @@ export async function syncS3Prefix(input: {
             mimeType,
             sizeBytes: Number(object.Size || 0),
         });
+        let photoExif = null;
+        if (classification.mediaType === "image") {
+            try {
+                const objectResponse = await client.send(new GetObjectCommand({ Bucket: bucket, Key: object.Key }));
+                const bytes = await bodyToBuffer(objectResponse.Body as BodyToBufferInput);
+                photoExif = extractPhotoExif(bytes);
+            } catch {
+                classification.warnings.push("exif parse failed");
+            }
+        }
 
         let assetId: number | null = null;
         if (classification.mediaType !== "other") {
@@ -148,8 +272,15 @@ export async function syncS3Prefix(input: {
                 objectUrl: objectUrlFromKey(storageId, object.Key),
                 mimeType,
                 sizeBytes: Number(object.Size || 0),
+                width: photoExif?.pixelWidth ?? null,
+                height: photoExif?.pixelHeight ?? null,
                 warnings: classification.warnings,
             });
+        }
+
+        if (assetId && photoExif) {
+            upsertPhotoExif(assetId, photoExif);
+            reconcileStoredExifLocation(assetId);
         }
 
         const syncStatus =
@@ -186,6 +317,18 @@ export function getMediaDashboard() {
     };
 }
 
+export function getPendingExifLocationConflicts(limit = 20) {
+    return listPendingLocationConflicts(limit);
+}
+
+export function applyLocationConflictResolution(
+    conflictId: number,
+    resolution: LocationConflictResolution,
+    resolvedBy?: string | null
+) {
+    return resolveAssetLocationConflict(conflictId, resolution, resolvedBy);
+}
+
 export function getMediaCatalog(filters?: {
     query?: string;
     mediaType?: string;
@@ -203,6 +346,181 @@ export function getMediaDetail(id: number) {
 
 export function applyMediaUpdate(id: number, input: AssetUpdateInput) {
     return updateMediaAsset(id, input);
+}
+
+function resolveLocationAddress(location: {
+    rawAddress?: string | null;
+    formattedAddress?: string | null;
+    label?: string | null;
+}) {
+    return location.rawAddress || location.formattedAddress || location.label || "";
+}
+
+export async function refreshMediaAssetGeolocation(assetId: number) {
+    const asset = getMediaDetail(assetId);
+    if (!asset) {
+        throw new Error("Asset not found");
+    }
+
+    const candidate = getRefreshableLocationForAsset(assetId);
+    if (!candidate) {
+        return {
+            asset,
+            summary: {
+                checked: 0,
+                updated: 0,
+                geocoded: 0,
+                failed: 0,
+                skipped: 1,
+                googleMapsEnabled: hasGoogleMapsKey(),
+                message: "No refreshable non-EXIF location found.",
+            },
+        };
+    }
+
+    const address = resolveLocationAddress(candidate);
+    if (!hasGoogleMapsKey()) {
+        return {
+            asset,
+            summary: {
+                checked: 1,
+                updated: 0,
+                geocoded: 0,
+                failed: 0,
+                skipped: 1,
+                googleMapsEnabled: false,
+                message: "Google Maps API key is missing.",
+            },
+        };
+    }
+
+    if (!address.trim()) {
+        return {
+            asset,
+            summary: {
+                checked: 1,
+                updated: 0,
+                geocoded: 0,
+                failed: 0,
+                skipped: 1,
+                googleMapsEnabled: true,
+                message: "Location row has no usable address.",
+            },
+        };
+    }
+
+    try {
+        const geocoded = await geocodeAddress(address);
+        if (!geocoded) {
+            markLocationGeocodeFailed(candidate.id);
+            return {
+                asset: getMediaDetail(assetId),
+                summary: {
+                    checked: 1,
+                    updated: 0,
+                    geocoded: 0,
+                    failed: 1,
+                    skipped: 0,
+                    googleMapsEnabled: true,
+                    message: "Google Maps could not geocode the address.",
+                },
+            };
+        }
+
+        applyGeocodeToLocation(candidate.id, {
+            formattedAddress: geocoded.formattedAddress,
+            googlePlaceId: geocoded.placeId,
+            lat: geocoded.lat,
+            lng: geocoded.lng,
+            rawResponseJson: geocoded.rawResponseJson,
+        });
+        if (candidate.mediaType === "image") {
+            reconcileStoredExifLocation(assetId);
+        }
+
+        return {
+            asset: getMediaDetail(assetId),
+            summary: {
+                checked: 1,
+                updated: 1,
+                geocoded: 1,
+                failed: 0,
+                skipped: 0,
+                googleMapsEnabled: true,
+                message: "Location refreshed from Google Maps.",
+            },
+        };
+    } catch (error) {
+        markLocationGeocodeFailed(candidate.id);
+        return {
+            asset: getMediaDetail(assetId),
+            summary: {
+                checked: 1,
+                updated: 0,
+                geocoded: 0,
+                failed: 1,
+                skipped: 0,
+                googleMapsEnabled: true,
+                message: error instanceof Error ? error.message : "Google Maps refresh failed.",
+            },
+        };
+    }
+}
+
+export async function refreshManyMediaAssetGeolocations(options?: { mode?: "pending" | "force"; limit?: number }) {
+    const candidates = listRefreshableLocations(options);
+    const googleMapsEnabled = hasGoogleMapsKey();
+    const summary = {
+        checked: candidates.length,
+        updated: 0,
+        geocoded: 0,
+        failed: 0,
+        skipped: 0,
+        googleMapsEnabled,
+        message: "",
+    };
+
+    if (!googleMapsEnabled) {
+        summary.skipped = candidates.length;
+        summary.message = "Google Maps API key is missing.";
+        return summary;
+    }
+
+    for (const candidate of candidates) {
+        const address = resolveLocationAddress(candidate);
+        if (!address.trim()) {
+            summary.skipped += 1;
+            continue;
+        }
+
+        try {
+            const geocoded = await geocodeAddress(address);
+            if (!geocoded) {
+                markLocationGeocodeFailed(candidate.id);
+                summary.failed += 1;
+                continue;
+            }
+
+            applyGeocodeToLocation(candidate.id, {
+                formattedAddress: geocoded.formattedAddress,
+                googlePlaceId: geocoded.placeId,
+                lat: geocoded.lat,
+                lng: geocoded.lng,
+                rawResponseJson: geocoded.rawResponseJson,
+            });
+            if (candidate.mediaType === "image") {
+                reconcileStoredExifLocation(candidate.assetId);
+            }
+            summary.updated += 1;
+            summary.geocoded += 1;
+        } catch {
+            markLocationGeocodeFailed(candidate.id);
+            summary.failed += 1;
+        }
+    }
+
+    summary.message = `Checked ${summary.checked}. Updated ${summary.updated}. Failed ${summary.failed}. Skipped ${summary.skipped}.`;
+    return summary;
 }
 
 export async function verifyMediaAssetIntegrity(assetId: number) {

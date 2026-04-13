@@ -19,7 +19,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "J&G's CMS",
+  title: "CMS",
   description: "Jimmy & Gloria's Content Management System",
 };
 

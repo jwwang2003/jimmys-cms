@@ -2,7 +2,7 @@ import * as XLSX from "xlsx";
 
 function splitList(value: string | undefined) {
     return String(value || "")
-        .split(/[;,，]/)
+        .split(/[;,，；\r\n]+/)
         .map((item) => item.trim())
         .filter(Boolean);
 }
@@ -85,8 +85,11 @@ const HEADER_ALIASES: Record<string, string> = {
     tags: "tags",
     tag: "tags",
     style: "tags",
+    风格: "tags",
     标签风格: "tags",
     标签: "tags",
+    標籤風格: "tags",
+    標籤: "tags",
     album: "collections",
     albums: "collections",
     collection: "collections",
@@ -224,7 +227,7 @@ function parseSheetRows(fileName: string, sheetName: string, rows: unknown[][]) 
     return parsedRows;
 }
 
-export function parseMetadataSpreadsheet(input: {
+export function parseMetadataSpreadsheetV1(input: {
     fileName: string;
     bytes: Buffer | Uint8Array;
 }) : ParsedMetadataSpreadsheet {
@@ -253,4 +256,11 @@ export function parseMetadataSpreadsheet(input: {
         sheets: workbook.SheetNames,
         rows,
     };
+}
+
+export function parseMetadataSpreadsheet(input: {
+    fileName: string;
+    bytes: Buffer | Uint8Array;
+}) : ParsedMetadataSpreadsheet {
+    return parseMetadataSpreadsheetV1(input);
 }

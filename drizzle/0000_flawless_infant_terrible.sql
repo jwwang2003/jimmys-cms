@@ -1,3 +1,23 @@
+CREATE TABLE `asset_location_conflicts` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`asset_id` integer NOT NULL,
+	`existing_location_id` integer,
+	`candidate_location_id` integer,
+	`distance_meters` real,
+	`status` text DEFAULT 'pending' NOT NULL,
+	`resolution` text,
+	`resolved_by` text,
+	`resolved_at` integer,
+	`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+	`updated_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+	FOREIGN KEY (`asset_id`) REFERENCES `media_assets`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`existing_location_id`) REFERENCES `asset_locations`(`id`) ON UPDATE no action ON DELETE set null,
+	FOREIGN KEY (`candidate_location_id`) REFERENCES `asset_locations`(`id`) ON UPDATE no action ON DELETE set null,
+	FOREIGN KEY (`resolved_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null
+);
+--> statement-breakpoint
+CREATE INDEX `asset_location_conflicts_asset_idx` ON `asset_location_conflicts` (`asset_id`);--> statement-breakpoint
+CREATE INDEX `asset_location_conflicts_status_idx` ON `asset_location_conflicts` (`status`);--> statement-breakpoint
 CREATE TABLE `asset_locations` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`asset_id` integer NOT NULL,
@@ -53,6 +73,8 @@ CREATE TABLE `media_assets` (
 	`storage_id` text NOT NULL,
 	`folder_id` integer,
 	`object_key` text NOT NULL,
+	`original_filename` text,
+	`display_filename` text,
 	`object_url` text,
 	`thumbnail_key` text,
 	`thumbnail_url` text,
@@ -64,6 +86,11 @@ CREATE TABLE `media_assets` (
 	`checksum` text,
 	`status` text DEFAULT 'draft' NOT NULL,
 	`visibility` text DEFAULT 'private' NOT NULL,
+	`lifecycle_status` text DEFAULT 'active' NOT NULL,
+	`integrity_status` text DEFAULT 'ok' NOT NULL,
+	`integrity_message` text,
+	`last_verified_at` integer,
+	`trashed_at` integer,
 	`published_at` integer,
 	`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
 	`updated_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
@@ -71,12 +98,16 @@ CREATE TABLE `media_assets` (
 	`metadata_json` text,
 	FOREIGN KEY (`storage_id`) REFERENCES `storage_locations`(`id`) ON UPDATE no action ON DELETE restrict,
 	FOREIGN KEY (`folder_id`) REFERENCES `storage_folders`(`id`) ON UPDATE no action ON DELETE set null,
-	FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null
+	FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null,
+	CONSTRAINT "media_assets_lifecycle_status_check" CHECK("media_assets"."lifecycle_status" in ('active', 'trashed')),
+	CONSTRAINT "media_assets_integrity_status_check" CHECK("media_assets"."integrity_status" in ('ok', 'missing', 'warning', 'invalid'))
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `media_assets_slug_unique` ON `media_assets` (`slug`);--> statement-breakpoint
 CREATE INDEX `media_assets_storage_idx` ON `media_assets` (`storage_id`,`object_key`);--> statement-breakpoint
 CREATE INDEX `media_assets_status_idx` ON `media_assets` (`status`);--> statement-breakpoint
+CREATE INDEX `media_assets_lifecycle_idx` ON `media_assets` (`lifecycle_status`);--> statement-breakpoint
+CREATE INDEX `media_assets_integrity_idx` ON `media_assets` (`integrity_status`);--> statement-breakpoint
 CREATE INDEX `media_assets_published_idx` ON `media_assets` (`published_at`);--> statement-breakpoint
 CREATE TABLE `media_attributes` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -90,6 +121,52 @@ CREATE TABLE `media_attributes` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `media_attributes_unique_key` ON `media_attributes` (`asset_id`,`namespace`,`key`);--> statement-breakpoint
+CREATE TABLE `media_ingest_job_items` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`job_id` integer NOT NULL,
+	`order_index` integer DEFAULT 0 NOT NULL,
+	`original_filename` text NOT NULL,
+	`stored_object_key` text,
+	`external_id` text,
+	`detected_media_type` text,
+	`status` text DEFAULT 'queued' NOT NULL,
+	`progress_percent` integer DEFAULT 0 NOT NULL,
+	`asset_id` integer,
+	`warning_message` text,
+	`error_message` text,
+	`detail_json` text,
+	`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+	`updated_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+	FOREIGN KEY (`job_id`) REFERENCES `media_ingest_jobs`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`asset_id`) REFERENCES `media_assets`(`id`) ON UPDATE no action ON DELETE set null
+);
+--> statement-breakpoint
+CREATE INDEX `media_ingest_job_items_job_idx` ON `media_ingest_job_items` (`job_id`,`order_index`);--> statement-breakpoint
+CREATE INDEX `media_ingest_job_items_status_idx` ON `media_ingest_job_items` (`status`);--> statement-breakpoint
+CREATE TABLE `media_ingest_jobs` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`status` text DEFAULT 'queued' NOT NULL,
+	`mode` text DEFAULT 'batch_upload' NOT NULL,
+	`spreadsheet_filename` text,
+	`total_items` integer DEFAULT 0 NOT NULL,
+	`processed_items` integer DEFAULT 0 NOT NULL,
+	`completed_items` integer DEFAULT 0 NOT NULL,
+	`warning_items` integer DEFAULT 0 NOT NULL,
+	`failed_items` integer DEFAULT 0 NOT NULL,
+	`unmatched_rows` integer DEFAULT 0 NOT NULL,
+	`current_item_label` text,
+	`summary_json` text,
+	`error_message` text,
+	`created_by` text,
+	`started_at` integer,
+	`finished_at` integer,
+	`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+	`updated_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+	FOREIGN KEY (`created_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null
+);
+--> statement-breakpoint
+CREATE INDEX `media_ingest_jobs_status_idx` ON `media_ingest_jobs` (`status`);--> statement-breakpoint
+CREATE INDEX `media_ingest_jobs_created_by_idx` ON `media_ingest_jobs` (`created_by`);--> statement-breakpoint
 CREATE TABLE `media_renditions` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`asset_id` integer NOT NULL,
@@ -115,6 +192,49 @@ CREATE TABLE `media_tags` (
 	FOREIGN KEY (`tag_id`) REFERENCES `tags`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
+CREATE TABLE `photo_cameras` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`make` text,
+	`model` text NOT NULL,
+	`normalized_key` text NOT NULL,
+	`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `photo_cameras_normalized_key_unique` ON `photo_cameras` (`normalized_key`);--> statement-breakpoint
+CREATE TABLE `photo_exif` (
+	`asset_id` integer PRIMARY KEY NOT NULL,
+	`camera_id` integer,
+	`lens_id` integer,
+	`captured_at` integer,
+	`pixel_width` integer,
+	`pixel_height` integer,
+	`focal_length_mm` real,
+	`aperture_f_number` real,
+	`exposure_time_text` text,
+	`iso` integer,
+	`orientation` integer,
+	`software` text,
+	`gps_lat` real,
+	`gps_lng` real,
+	`gps_altitude_m` real,
+	`metadata_json` text,
+	`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+	`updated_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
+	FOREIGN KEY (`asset_id`) REFERENCES `media_assets`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`camera_id`) REFERENCES `photo_cameras`(`id`) ON UPDATE no action ON DELETE set null,
+	FOREIGN KEY (`lens_id`) REFERENCES `photo_lenses`(`id`) ON UPDATE no action ON DELETE set null
+);
+--> statement-breakpoint
+CREATE INDEX `photo_exif_camera_idx` ON `photo_exif` (`camera_id`);--> statement-breakpoint
+CREATE INDEX `photo_exif_lens_idx` ON `photo_exif` (`lens_id`);--> statement-breakpoint
+CREATE TABLE `photo_lenses` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`label` text NOT NULL,
+	`normalized_key` text NOT NULL,
+	`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `photo_lenses_normalized_key_unique` ON `photo_lenses` (`normalized_key`);--> statement-breakpoint
 CREATE TABLE `storage_folders` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`storage_id` text NOT NULL,

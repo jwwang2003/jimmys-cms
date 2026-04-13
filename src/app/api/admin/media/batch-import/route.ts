@@ -3,16 +3,10 @@ import { NextResponse } from "next/server";
 import { canEdit } from "@/lib/authz";
 import { getCurrentSession } from "@/lib/session";
 import { hasGoogleMapsKey } from "@/lib/google-maps";
-import { readSpreadsheetImportFile } from "@/lib/media/spreadsheet-files";
-import { batchIngestMediaIntoDb } from "@/lib/media/spreadsheet-import";
-import { uploadMediaAsset } from "@/lib/media/service";
+import { createAndRunBatchIngestJob } from "@/lib/media/ingest-jobs";
+import { readSpreadsheetUpload } from "@/lib/media/spreadsheet-upload";
 
 export const runtime = "nodejs";
-
-function prefixForMimeType(mimeType?: string | null) {
-    if (mimeType?.startsWith("image/")) return "content" as const;
-    return "media" as const;
-}
 
 export async function POST(request: Request) {
     const session = await getCurrentSession();
@@ -25,9 +19,9 @@ export async function POST(request: Request) {
 
     try {
         const form = await request.formData();
-        const spreadsheetFileName = String(form.get("spreadsheetFileName") || "");
-        if (!spreadsheetFileName.trim()) {
-            return NextResponse.json({ error: "Missing spreadsheet file selection" }, { status: 400 });
+        const spreadsheetFile = form.get("spreadsheet");
+        if (!(spreadsheetFile instanceof File)) {
+            return NextResponse.json({ error: "Missing spreadsheet file upload" }, { status: 400 });
         }
 
         const files = form
@@ -37,45 +31,32 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: "Select at least one media file" }, { status: 400 });
         }
 
-        const spreadsheet = await readSpreadsheetImportFile(spreadsheetFileName);
-        const { sqlite } = await import("@/db");
-        const summary = await batchIngestMediaIntoDb(sqlite, {
+        const spreadsheet = await readSpreadsheetUpload(spreadsheetFile);
+        const job = await createAndRunBatchIngestJob({
             spreadsheet,
-            mediaFiles: await Promise.all(
+            files: await Promise.all(
                 files.map(async (file) => ({
                     fileName: file.name,
                     mimeType: file.type || null,
                     bytes: new Uint8Array(await file.arrayBuffer()),
                 }))
             ),
-            persistFile: async (file) => {
-                const asset = await uploadMediaAsset({
-                    storageId: "default",
-                    prefix: prefixForMimeType(file.mimeType),
-                    fileName: file.fileName,
-                    bytes: file.bytes,
-                    mimeType: file.mimeType || null,
-                    createdBy: session.userId,
-                });
-
-                if (!asset?.id || !asset.media_type || (asset.media_type !== "image" && asset.media_type !== "video")) {
-                    throw new Error(`Failed to persist supported media asset for ${file.fileName}`);
-                }
-
-                return {
-                    assetId: Number(asset.id),
-                    mediaType: asset.media_type,
-                };
-            },
+            createdBy: session.userId,
         });
 
         return NextResponse.json({
             ok: true,
-            summary,
+            jobId: job.id,
             googleMapsEnabled: hasGoogleMapsKey(),
         });
     } catch (error) {
         const message = error instanceof Error ? error.message : "Batch ingest failed";
-        return NextResponse.json({ error: message }, { status: 500 });
+        const status =
+            message === "Missing spreadsheet file upload" ||
+            message === "Unsupported spreadsheet file type" ||
+            message === "Spreadsheet file is empty"
+                ? 400
+                : 500;
+        return NextResponse.json({ error: message }, { status });
     }
 }

@@ -9,6 +9,38 @@ const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 
+async function removeDirWithRetry(dirPath, retries = 5) {
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (error?.code === "EBUSY" && attempt === retries - 1) {
+        return;
+      }
+      if (error?.code !== "EBUSY") {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
+function applyAllDrizzleMigrations(database) {
+  const migrations = fs
+    .readdirSync(path.join(process.cwd(), "drizzle"))
+    .filter((name) => name.endsWith(".sql"))
+    .sort((left, right) => left.localeCompare(right));
+  if (migrations.length === 0) {
+    throw new Error("Missing drizzle SQL migrations");
+  }
+  for (const migration of migrations) {
+    database.exec(
+      fs.readFileSync(path.join(process.cwd(), "drizzle", migration), "utf8").replaceAll("--> statement-breakpoint", "")
+    );
+  }
+}
+
 (async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "jimmys-cms-lifecycle-"));
   const dbPath = path.join(tempDir, "lifecycle.sqlite");
@@ -25,11 +57,21 @@ const Database = require("better-sqlite3");
       return originalResolveFilename.call(this, request, parent, isMain, options);
     };
 
-    const migrationSql = fs
-      .readFileSync(path.join(process.cwd(), "drizzle", "0001_asset_integrity_lifecycle.sql"), "utf8")
-      .replaceAll("--> statement-breakpoint", "");
-    db.exec(fs.readFileSync(path.join(process.cwd(), "drizzle", "0000_careless_the_captain.sql"), "utf8").replaceAll("--> statement-breakpoint", ""));
-    db.exec(migrationSql);
+    applyAllDrizzleMigrations(db);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS "__drizzle_migrations" (
+        id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+        hash text NOT NULL,
+        created_at numeric
+      );
+    `);
+    db.prepare(`
+      INSERT INTO "__drizzle_migrations" (hash, created_at)
+      VALUES (?, ?)
+    `).run(
+      "current-baseline",
+      Date.now()
+    );
 
     const {
       archiveMediaAsset,
@@ -166,7 +208,7 @@ const Database = require("better-sqlite3");
     delete process.env.SQLITE_URL;
     importedSqlite?.close();
     db.close();
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    await removeDirWithRetry(tempDir);
   }
 })().catch((error) => {
   console.error(error);

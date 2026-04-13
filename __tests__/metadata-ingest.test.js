@@ -8,6 +8,21 @@ const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 
+function applyAllDrizzleMigrations(database) {
+  const migrations = fs
+    .readdirSync(path.join(process.cwd(), "drizzle"))
+    .filter((name) => name.endsWith(".sql"))
+    .sort((left, right) => left.localeCompare(right));
+  if (migrations.length === 0) {
+    throw new Error("Missing drizzle SQL migrations");
+  }
+  for (const migration of migrations) {
+    database.exec(
+      fs.readFileSync(path.join(process.cwd(), "drizzle", migration), "utf8").replaceAll("--> statement-breakpoint", "")
+    );
+  }
+}
+
 (async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "jimmys-cms-ingest-"));
   const dbPath = path.join(tempDir, "ingest.sqlite");
@@ -21,10 +36,7 @@ const Database = require("better-sqlite3");
 
   const bootstrapDb = new Database(dbPath);
   try {
-    const migrationSql = fs
-      .readFileSync(path.join(process.cwd(), "drizzle", "0000_careless_the_captain.sql"), "utf8")
-      .replaceAll("--> statement-breakpoint", "");
-    bootstrapDb.exec(migrationSql);
+    applyAllDrizzleMigrations(bootstrapDb);
   } finally {
     bootstrapDb.close();
   }
@@ -82,6 +94,50 @@ const Database = require("better-sqlite3");
   assert.equal(metadata.spreadsheet.externalId, "4");
   assert.equal(metadata.spreadsheet.country, "Japan");
   assert.equal(metadata.spreadsheet.sourceFile, "artwork_v1_0.xlsx");
+
+  sqlite.prepare(`
+    insert into tags (label, slug, created_at)
+    values ('Travel', 'travel', ?)
+  `).run(Date.now());
+  sqlite.prepare(`
+    insert into media_assets (
+      title, slug, media_type, storage_id, object_key, object_url, mime_type, size_bytes, status, visibility, created_at, updated_at
+    )
+    values (?, ?, 'image', 'default', ?, ?, 'image/jpeg', 1024, 'draft', 'private', ?, ?)
+  `).run(
+    "Artwork 9",
+    "artwork-9",
+    "content/9.jpg",
+    "https://s3.glorialan.com.s3.us-east-2.amazonaws.com/content/9.jpg",
+    Date.now(),
+    Date.now()
+  );
+
+  const messySummary = await importMediaSpreadsheetIntoDb(sqlite, {
+    fileName: "messy-tags.csv",
+    bytes: Buffer.from(
+      "external_id,\u6807\u7b7e/\u98ce\u683c\n9,\"  Travel, night , portrait\uff1b documentary  \"\n",
+      "utf8",
+    ),
+  });
+
+  assert.equal(messySummary.imported, 1);
+  const messyTags = sqlite.prepare(`
+    select t.label, t.slug
+    from media_tags mt
+    join tags t on t.id = mt.tag_id
+    where mt.asset_id = 2
+    order by t.slug asc
+  `).all();
+  assert.deepEqual(
+    messyTags,
+    [
+      { label: "documentary", slug: "documentary" },
+      { label: "night", slug: "night" },
+      { label: "portrait", slug: "portrait" },
+      { label: "Travel", slug: "travel" },
+    ]
+  );
 
   sqlite.close();
   fs.rmSync(tempDir, { recursive: true, force: true });

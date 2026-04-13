@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Card, Stack, Text, Title } from "@mantine/core";
+import { Badge, Card, Group, Stack, Text, Title } from "@mantine/core";
 
 import { AssetFilters } from "@/components/admin/AssetFilters";
 import { AssetTable } from "@/components/admin/AssetTable";
@@ -38,21 +38,34 @@ export default async function AdminMediaPage({
   });
 
   return (
-    <Stack gap="xl">
-      <Stack gap={4}>
-        <Title order={1}>Media library</Title>
-        <Text c="dimmed">
+    <Stack gap="lg">
+      <Stack gap={6}>
+        <Group justify="space-between" align="end">
+          <div>
+            <Text size="xs" tt="uppercase" c="dimmed" fw={700} style={{ letterSpacing: "0.08em" }}>
+              Library
+            </Text>
+            <Title order={1}>Media</Title>
+          </div>
+          <Badge component={Link} href="/admin/media?lifecycleStatus=trashed" variant="light" color="gray">
+            Open recycle bin
+          </Badge>
+        </Group>
+        <Text size="sm" c="dimmed">
           Browse, filter, upload, and review canonical media assets. Guests are read-only.
-        </Text>
-        <Text size="sm">
-          <Link href="/admin/media?lifecycleStatus=trashed">Open recycle bin</Link>
         </Text>
       </Stack>
 
       <MediaUploadForm editable={canEdit(session.role)} />
 
-      <Card withBorder radius="lg" p="lg">
-        <Stack gap="lg">
+      <Card
+        withBorder
+        radius="lg"
+        p="md"
+        bg="rgba(18, 20, 26, 0.92)"
+        style={{ borderColor: "rgba(255, 255, 255, 0.08)" }}
+      >
+        <Stack gap="md">
           <AssetFilters />
           <AssetTable assets={assets as never[]} editable={canEdit(session.role)} />
         </Stack>

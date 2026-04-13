@@ -1,19 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { Badge, Group, Table, TableTbody, TableTd, TableTh, TableThead, TableTr, Text } from "@mantine/core";
+import { AspectRatio, Badge, Box, Group, Image, Paper, Pill, PillGroup, Stack, Text } from "@mantine/core";
+
 import { AssetActionMenu } from "./AssetActionMenu";
 
 type AssetRow = {
   id: number;
   title: string;
   slug: string;
+  filename?: string | null;
   media_type: string;
+  object_url?: string | null;
+  object_key: string;
   status: string;
   visibility: string;
   lifecycle_status: string;
   integrity_status: string;
-  last_verified_at?: number | null;
   tags: string[];
   warnings: string[];
 };
@@ -24,75 +27,134 @@ function integrityColor(status: string) {
   return "green";
 }
 
-export function AssetTable({ assets, editable }: { assets: AssetRow[]; editable: boolean }) {
+function AssetThumb({ asset }: { asset: AssetRow }) {
+  if (asset.object_url && asset.media_type === "image") {
+    return (
+      <AspectRatio ratio={1} w={84}>
+        <Image src={asset.object_url} alt={asset.title} radius="md" fit="cover" />
+      </AspectRatio>
+    );
+  }
+
+  if (asset.object_url && asset.media_type === "video") {
+    return (
+      <AspectRatio ratio={1} w={84}>
+        <video
+          muted
+          preload="metadata"
+          src={asset.object_url}
+          style={{ width: "100%", height: "100%", borderRadius: "0.75rem", objectFit: "cover" }}
+        />
+      </AspectRatio>
+    );
+  }
+
   return (
-    <Table striped highlightOnHover withTableBorder>
-      <TableThead>
-        <TableTr>
-          <TableTh>Asset</TableTh>
-          <TableTh>Type</TableTh>
-          <TableTh>Status</TableTh>
-          <TableTh>Visibility</TableTh>
-          <TableTh>Integrity</TableTh>
-          <TableTh>Lifecycle</TableTh>
-          <TableTh>Tags</TableTh>
-          <TableTh>Warnings</TableTh>
-          <TableTh>Actions</TableTh>
-        </TableTr>
-      </TableThead>
-      <TableTbody>
-        {assets.length === 0 && (
-          <TableTr>
-            <TableTd colSpan={9}>
-              <Text c="dimmed" ta="center">No assets found.</Text>
-            </TableTd>
-          </TableTr>
-        )}
-        {assets.map((asset) => (
-          <TableTr key={asset.id}>
-            <TableTd>
-              <Link href={`/admin/media/${asset.id}`}>{asset.title}</Link>
-              <Text size="xs" c="dimmed">{asset.slug}</Text>
-            </TableTd>
-            <TableTd>{asset.media_type}</TableTd>
-            <TableTd><Badge variant="light">{asset.status}</Badge></TableTd>
-            <TableTd>{asset.visibility}</TableTd>
-            <TableTd>
-              <Badge color={integrityColor(asset.integrity_status)} variant="light">
-                {asset.integrity_status}
-              </Badge>
-            </TableTd>
-            <TableTd>
-              <Badge variant="outline">{asset.lifecycle_status}</Badge>
-            </TableTd>
-            <TableTd>
-              <Group gap={6}>
-                {asset.tags.map((tag) => (
-                  <Badge key={tag} variant="outline">{tag}</Badge>
-                ))}
+    <AspectRatio ratio={1} w={84}>
+      <Box
+        style={{
+          borderRadius: "0.75rem",
+          background: "linear-gradient(180deg, rgba(67, 72, 84, 0.45), rgba(22, 24, 31, 0.95))",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          border: "1px solid rgba(255, 255, 255, 0.08)",
+        }}
+      >
+        <Text size="xs" c="dimmed" tt="uppercase">
+          {asset.media_type}
+        </Text>
+      </Box>
+    </AspectRatio>
+  );
+}
+
+export function AssetTable({ assets, editable }: { assets: AssetRow[]; editable: boolean }) {
+  if (assets.length === 0) {
+    return (
+      <Paper
+        withBorder
+        radius="lg"
+        p="xl"
+        bg="rgba(18, 20, 26, 0.92)"
+        style={{ borderColor: "rgba(255, 255, 255, 0.08)" }}
+      >
+        <Text c="dimmed" ta="center">No assets found.</Text>
+      </Paper>
+    );
+  }
+
+  return (
+    <Stack gap="xs">
+      {assets.map((asset) => (
+        <Paper
+          key={asset.id}
+          withBorder
+          radius="lg"
+          p="sm"
+          bg="rgba(18, 20, 26, 0.92)"
+          style={{ borderColor: "rgba(255, 255, 255, 0.08)" }}
+        >
+          <Group align="flex-start" wrap="nowrap" gap="sm">
+            <AssetThumb asset={asset} />
+
+            <Stack gap={8} style={{ flex: 1, minWidth: 0 }}>
+              <Group justify="space-between" align="flex-start" gap="sm" wrap="nowrap">
+                <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
+                  <Link href={`/admin/media/${asset.id}`} style={{ textDecoration: "none" }}>
+                    <Text fw={700} size="sm" truncate>
+                      {asset.title}
+                    </Text>
+                  </Link>
+                  <Text size="xs" c="dimmed" truncate>
+                    {asset.filename || asset.slug}
+                  </Text>
+                  <Text size="xs" c="dimmed" truncate>
+                    {asset.object_key}
+                  </Text>
+                </Stack>
+
+                <Group gap={6} wrap="wrap" justify="flex-end">
+                  <Badge variant="light">{asset.status}</Badge>
+                  <Badge variant="outline">{asset.visibility}</Badge>
+                  <Badge color={integrityColor(asset.integrity_status)} variant="light">
+                    {asset.integrity_status}
+                  </Badge>
+                  <Badge variant="outline">{asset.lifecycle_status}</Badge>
+                  <AssetActionMenu
+                    assetId={asset.id}
+                    editable={editable}
+                    trashed={asset.lifecycle_status === "trashed"}
+                  />
+                </Group>
               </Group>
-            </TableTd>
-            <TableTd>
-              {asset.warnings.length > 0 ? (
-                <Badge color="yellow" variant="light">{asset.warnings.length} warning{asset.warnings.length === 1 ? "" : "s"}</Badge>
-              ) : asset.integrity_status === "missing" ? (
-                <Badge color="red" variant="light">Missing file</Badge>
-              ) : asset.integrity_status === "warning" || asset.integrity_status === "invalid" ? (
-                <Badge color="yellow" variant="light">Integrity warning</Badge>
-              ) : (
-                <Text size="sm" c="dimmed">Clean</Text>
+
+              {asset.tags.length > 0 && (
+                <PillGroup>
+                  {asset.tags.map((tag) => (
+                    <Pill key={tag}>{tag}</Pill>
+                  ))}
+                </PillGroup>
               )}
-            </TableTd>
-            <TableTd>
-              <AssetActionMenu
-                assetId={asset.id}
-                editable={editable}
-                trashed={asset.lifecycle_status === "trashed"}
-              />
-            </TableTd>
-          </TableTr>
-        ))}
-      </TableTbody>
-    </Table>
+
+              <Group gap="xs" wrap="wrap">
+                <Badge variant="dot" color={asset.media_type === "video" ? "grape" : "blue"}>
+                  {asset.media_type}
+                </Badge>
+                {asset.warnings.length > 0 ? (
+                  <Badge color="yellow" variant="light">
+                    {asset.warnings.length} warning{asset.warnings.length === 1 ? "" : "s"}
+                  </Badge>
+                ) : asset.integrity_status === "missing" ? (
+                  <Badge color="red" variant="light">Missing file</Badge>
+                ) : (
+                  <Text size="xs" c="dimmed">No current warnings</Text>
+                )}
+              </Group>
+            </Stack>
+          </Group>
+        </Paper>
+      ))}
+    </Stack>
   );
 }

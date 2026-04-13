@@ -10,7 +10,7 @@ import {
     uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
-import { user as authUser } from "@/../auth-schema";
+import { user as authUser } from "../../../auth-schema";
 
 const timestamp = () => sql`(cast(unixepoch('subsecond') * 1000 as integer))`;
 
@@ -75,6 +75,7 @@ export const mediaAssets = sqliteTable(
             .references(() => storageLocations.id, { onDelete: "restrict" }),
         folderId: integer("folder_id").references(() => storageFolders.id, { onDelete: "set null" }),
         objectKey: text("object_key").notNull(), // S3 key
+        filename: text("original_filename"),
         objectUrl: text("object_url"), // pre-resolved URL (optional)
         thumbnailKey: text("thumbnail_key"),
         thumbnailUrl: text("thumbnail_url"),
@@ -256,6 +257,68 @@ export const mediaAttributes = sqliteTable(
     ]
 );
 
+export const photoCameras = sqliteTable(
+    "photo_cameras",
+    {
+        id: integer("id").primaryKey({ autoIncrement: true }),
+        make: text("make"),
+        model: text("model").notNull(),
+        normalizedKey: text("normalized_key").notNull(),
+        createdAt: integer("created_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .notNull(),
+    },
+    (table) => [uniqueIndex("photo_cameras_normalized_key_unique").on(table.normalizedKey)]
+);
+
+export const photoLenses = sqliteTable(
+    "photo_lenses",
+    {
+        id: integer("id").primaryKey({ autoIncrement: true }),
+        label: text("label").notNull(),
+        normalizedKey: text("normalized_key").notNull(),
+        createdAt: integer("created_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .notNull(),
+    },
+    (table) => [uniqueIndex("photo_lenses_normalized_key_unique").on(table.normalizedKey)]
+);
+
+export const photoExif = sqliteTable(
+    "photo_exif",
+    {
+        assetId: integer("asset_id")
+            .primaryKey()
+            .references(() => mediaAssets.id, { onDelete: "cascade" }),
+        cameraId: integer("camera_id").references(() => photoCameras.id, { onDelete: "set null" }),
+        lensId: integer("lens_id").references(() => photoLenses.id, { onDelete: "set null" }),
+        capturedAt: integer("captured_at", { mode: "timestamp_ms" }),
+        pixelWidth: integer("pixel_width"),
+        pixelHeight: integer("pixel_height"),
+        focalLengthMm: real("focal_length_mm"),
+        apertureFNumber: real("aperture_f_number"),
+        exposureTimeText: text("exposure_time_text"),
+        iso: integer("iso"),
+        orientation: integer("orientation"),
+        software: text("software"),
+        gpsLat: real("gps_lat"),
+        gpsLng: real("gps_lng"),
+        gpsAltitudeM: real("gps_altitude_m"),
+        metadataJson: text("metadata_json"),
+        createdAt: integer("created_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .notNull(),
+        updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .$onUpdate(() => new Date())
+            .notNull(),
+    },
+    (table) => [
+        index("photo_exif_camera_idx").on(table.cameraId),
+        index("photo_exif_lens_idx").on(table.lensId),
+    ]
+);
+
 export const collections = sqliteTable(
     "collections",
     {
@@ -314,6 +377,119 @@ export const assetLocations = sqliteTable(
     (table) => [
         index("asset_locations_asset_idx").on(table.assetId),
         index("asset_locations_primary_idx").on(table.assetId, table.isPrimary),
+    ]
+);
+
+export const assetLocationConflicts = sqliteTable(
+    "asset_location_conflicts",
+    {
+        id: integer("id").primaryKey({ autoIncrement: true }),
+        assetId: integer("asset_id")
+            .notNull()
+            .references(() => mediaAssets.id, { onDelete: "cascade" }),
+        existingLocationId: integer("existing_location_id").references(() => assetLocations.id, { onDelete: "set null" }),
+        candidateLocationId: integer("candidate_location_id").references(() => assetLocations.id, { onDelete: "set null" }),
+        distanceMeters: real("distance_meters"),
+        status: text("status", { enum: ["pending", "resolved"] })
+            .default("pending")
+            .notNull(),
+        resolution: text("resolution", { enum: ["keep_exif", "keep_existing"] }),
+        resolvedBy: text("resolved_by").references(() => authUser.id, { onDelete: "set null" }),
+        resolvedAt: integer("resolved_at", { mode: "timestamp_ms" }),
+        createdAt: integer("created_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .notNull(),
+        updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .$onUpdate(() => new Date())
+            .notNull(),
+    },
+    (table) => [
+        index("asset_location_conflicts_asset_idx").on(table.assetId),
+        index("asset_location_conflicts_status_idx").on(table.status),
+    ]
+);
+
+export const mediaIngestJobs = sqliteTable(
+    "media_ingest_jobs",
+    {
+        id: integer("id").primaryKey({ autoIncrement: true }),
+        status: text("status", {
+            enum: ["queued", "running", "completed", "failed", "canceled"],
+        })
+            .default("queued")
+            .notNull(),
+        mode: text("mode").default("batch_upload").notNull(),
+        spreadsheetFilename: text("spreadsheet_filename"),
+        totalItems: integer("total_items").default(0).notNull(),
+        processedItems: integer("processed_items").default(0).notNull(),
+        completedItems: integer("completed_items").default(0).notNull(),
+        warningItems: integer("warning_items").default(0).notNull(),
+        failedItems: integer("failed_items").default(0).notNull(),
+        unmatchedRows: integer("unmatched_rows").default(0).notNull(),
+        currentItemLabel: text("current_item_label"),
+        summaryJson: text("summary_json"),
+        errorMessage: text("error_message"),
+        createdBy: text("created_by").references(() => authUser.id, { onDelete: "set null" }),
+        startedAt: integer("started_at", { mode: "timestamp_ms" }),
+        finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+        createdAt: integer("created_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .notNull(),
+        updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .$onUpdate(() => new Date())
+            .notNull(),
+    },
+    (table) => [
+        index("media_ingest_jobs_status_idx").on(table.status),
+        index("media_ingest_jobs_created_by_idx").on(table.createdBy),
+    ]
+);
+
+export const mediaIngestJobItems = sqliteTable(
+    "media_ingest_job_items",
+    {
+        id: integer("id").primaryKey({ autoIncrement: true }),
+        jobId: integer("job_id")
+            .notNull()
+            .references(() => mediaIngestJobs.id, { onDelete: "cascade" }),
+        orderIndex: integer("order_index").default(0).notNull(),
+        originalFilename: text("original_filename").notNull(),
+        storedObjectKey: text("stored_object_key"),
+        externalId: text("external_id"),
+        detectedMediaType: text("detected_media_type"),
+        status: text("status", {
+            enum: [
+                "queued",
+                "parsing",
+                "matching",
+                "uploading",
+                "uploaded",
+                "metadata_applied",
+                "warning",
+                "failed",
+                "completed",
+            ],
+        })
+            .default("queued")
+            .notNull(),
+        progressPercent: integer("progress_percent").default(0).notNull(),
+        assetId: integer("asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
+        warningMessage: text("warning_message"),
+        errorMessage: text("error_message"),
+        detailJson: text("detail_json"),
+        createdAt: integer("created_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .notNull(),
+        updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .$onUpdate(() => new Date())
+            .notNull(),
+    },
+    (table) => [
+        index("media_ingest_job_items_job_idx").on(table.jobId, table.orderIndex),
+        index("media_ingest_job_items_status_idx").on(table.status),
     ]
 );
 

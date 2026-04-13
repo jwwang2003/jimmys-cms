@@ -1,8 +1,9 @@
 import Link from "next/link";
-import { Stack, Text, Title } from "@mantine/core";
+import { Badge, Group, Pill, PillGroup, SimpleGrid, Stack, Text, Title } from "@mantine/core";
 import { notFound } from "next/navigation";
 
 import { AssetEditor } from "@/components/admin/AssetEditor";
+import { AssetPreviewCard } from "@/components/admin/AssetPreviewCard";
 import { canEdit, requireCmsSession } from "@/lib/authz";
 import { getMediaDetail } from "@/lib/media/service";
 
@@ -15,19 +16,36 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
   }
 
   return (
-    <Stack gap="lg">
+    <Stack gap="md">
       <div>
         <Link href="/admin/media">← Back to media</Link>
       </div>
-      <div>
+      <Stack gap={6}>
         <Title order={1}>{asset.title}</Title>
-        <Text c="dimmed">{asset.object_key}</Text>
-        <Text size="sm" c="dimmed">Integrity: {String(asset.integrity_status)}</Text>
-        <Text size="sm" c="dimmed">
+        <Text size="sm" c="dimmed">{asset.filename || asset.object_key}</Text>
+        <Text size="xs" c="dimmed">{asset.object_key}</Text>
+        <Group gap="xs">
+          <Badge variant="light">{String(asset.status)}</Badge>
+          <Badge variant="outline">{String(asset.visibility)}</Badge>
+          <Badge variant="light" color={asset.integrity_status === "ok" ? "green" : asset.integrity_status === "missing" ? "red" : "yellow"}>
+            {String(asset.integrity_status)}
+          </Badge>
+        </Group>
+        <Text size="xs" c="dimmed">
           Last verified: {asset.last_verified_at ? new Date(asset.last_verified_at).toLocaleString() : "Never"}
         </Text>
-      </div>
-      <AssetEditor asset={asset as never} editable={canEdit(session.role)} />
+        {asset.tags.length > 0 && (
+          <PillGroup>
+            {asset.tags.map((tag) => (
+              <Pill key={tag}>{tag}</Pill>
+            ))}
+          </PillGroup>
+        )}
+      </Stack>
+      <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md" verticalSpacing="md">
+        <AssetPreviewCard asset={asset} />
+        <AssetEditor asset={asset as never} editable={canEdit(session.role)} />
+      </SimpleGrid>
     </Stack>
   );
 }

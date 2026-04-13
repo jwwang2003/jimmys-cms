@@ -1,8 +1,15 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
-require("ts-node/register/transpile-only");
+require("ts-node").register({
+  transpileOnly: true,
+  compilerOptions: {
+    module: "commonjs",
+    moduleResolution: "node",
+  },
+});
 
 const assert = require("node:assert/strict");
-const { DatabaseSync } = require("node:sqlite");
+const Database = require("better-sqlite3");
+const { drizzle } = require("drizzle-orm/better-sqlite3");
 
 const { ensureCmsDefaults } = require("../src/db/bootstrap.ts");
 
@@ -13,9 +20,10 @@ const { ensureCmsDefaults } = require("../src/db/bootstrap.ts");
   process.env.MEDIA_PREFIX = "media";
   process.env.PUBLIC_PREFIX = "public";
 
-  const db = new DatabaseSync(":memory:");
+  const sqlite = new Database(":memory:");
+  const db = drizzle(sqlite);
 
-  db.exec(`
+  sqlite.exec(`
     CREATE TABLE storage_locations (
       id TEXT PRIMARY KEY,
       bucket_name TEXT NOT NULL,
@@ -40,14 +48,16 @@ const { ensureCmsDefaults } = require("../src/db/bootstrap.ts");
 
   ensureCmsDefaults(db);
 
-  const location = db.prepare("select * from storage_locations where id = 'default'").get();
+  const location = sqlite.prepare("select * from storage_locations where id = 'default'").get();
   assert.equal(location.bucket_name, "s3.glorialan.com");
   assert.equal(location.region, "us-east-2");
 
-  const folders = db.prepare("select folder_type, prefix from storage_folders order by folder_type asc").all();
+  const folders = sqlite.prepare("select folder_type, prefix from storage_folders order by folder_type asc").all();
   assert.equal(folders.length, 4);
   assert.ok(folders.some((folder) => folder.folder_type === "images" && folder.prefix === "content"));
   assert.ok(folders.some((folder) => folder.folder_type === "videos" && folder.prefix === "media"));
+
+  sqlite.close();
 
   console.log("cms-bootstrap.test.js ok");
 })().catch((error) => {

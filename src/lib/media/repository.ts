@@ -1,10 +1,39 @@
-import { sqlite } from "@/db";
+import { db } from "@/db";
+import {
+    and,
+    asc,
+    count,
+    desc,
+    eq,
+    inArray,
+    like,
+    ne,
+    or,
+} from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
+import {
+    assetLocationConflicts,
+    assetLocations,
+    collectionAssets,
+    collections,
+    mediaAssets,
+    mediaTags,
+    photoCameras,
+    photoExif,
+    photoLenses,
+    storageObjects,
+    tags,
+} from "@/db/schema/schema";
+import { user as authUser } from "../../../auth-schema";
 import type {
     AssetIntegrityStatus,
     AssetLifecycleStatus,
     AssetLocationInput,
     AssetUpdateInput,
+    LocationConflictRecord,
+    LocationConflictResolution,
     ManagedMediaType,
+    PhotoExifInput,
 } from "./types";
 import { slugFromText } from "./normalization";
 
@@ -16,6 +45,7 @@ type RawAssetRecord = {
     media_type: ManagedMediaType;
     storage_id: string;
     object_key: string;
+    filename: string | null;
     object_url: string | null;
     mime_type: string | null;
     size_bytes: number;
@@ -50,6 +80,25 @@ export type IntegrityAssetRecord = {
     id: number;
     storage_id: string;
     object_key: string;
+    filename: string | null;
+};
+
+export type LocationRefreshCandidate = {
+    id: number;
+    assetId: number;
+    mediaType: AssetMatch["media_type"];
+    source: string | null;
+    status: string | null;
+    label: string | null;
+    rawAddress: string | null;
+    formattedAddress: string | null;
+};
+
+type SelectedAssetRow = Omit<RawAssetRecord, "last_verified_at" | "trashed_at" | "created_at" | "updated_at"> & {
+    last_verified_at: Date | number | null;
+    trashed_at: Date | number | null;
+    created_at: Date | number | null;
+    updated_at: Date | number | null;
 };
 
 function parseJsonArray(value: string | null | undefined) {
@@ -63,7 +112,56 @@ function parseJsonArray(value: string | null | undefined) {
 }
 
 function now() {
-    return Date.now();
+    return new Date();
+}
+
+function toMillis(value: unknown) {
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === "number") return value;
+    if (value == null) return null;
+    const parsed = Number(value);
+    return Number.isNaN(parsed) ? null : parsed;
+}
+
+function normalizeAssetRow(row: SelectedAssetRow): RawAssetRecord {
+    return {
+        ...row,
+        last_verified_at: toMillis(row.last_verified_at),
+        trashed_at: toMillis(row.trashed_at),
+        created_at: toMillis(row.created_at) || 0,
+        updated_at: toMillis(row.updated_at) || 0,
+    };
+}
+
+function toDate(value: number | null | undefined) {
+    return value == null ? null : new Date(value);
+}
+
+function normalizeExifKey(...parts: Array<string | null | undefined>) {
+    return parts
+        .map((part) => slugFromText(part || ""))
+        .filter(Boolean)
+        .join("::");
+}
+
+const EXIF_LOCATION_MATCH_DISTANCE_METERS = 100;
+
+function toRadians(value: number) {
+    return (value * Math.PI) / 180;
+}
+
+function distanceMeters(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
+    const earthRadius = 6371000;
+    const dLat = toRadians(b.lat - a.lat);
+    const dLng = toRadians(b.lng - a.lng);
+    const lat1 = toRadians(a.lat);
+    const lat2 = toRadians(b.lat);
+
+    const sinLat = Math.sin(dLat / 2);
+    const sinLng = Math.sin(dLng / 2);
+    const h = sinLat * sinLat + sinLng * sinLng * Math.cos(lat1) * Math.cos(lat2);
+    const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+    return earthRadius * c;
 }
 
 function buildUniqueSlug(base: string, currentAssetId?: number) {
@@ -71,14 +169,148 @@ function buildUniqueSlug(base: string, currentAssetId?: number) {
     let slug = cleanBase;
     let suffix = 2;
     while (true) {
-        const existing = sqlite
-            .prepare("select id from media_assets where slug = ?")
-            .get(slug) as { id: number } | undefined;
+        const existing = db
+            .select({ id: mediaAssets.id })
+            .from(mediaAssets)
+            .where(eq(mediaAssets.slug, slug))
+            .limit(1)
+            .get();
         if (!existing || existing.id === currentAssetId) {
             return slug;
         }
         slug = `${cleanBase}-${suffix++}`;
     }
+}
+
+const assetListSelect = {
+    id: mediaAssets.id,
+    title: mediaAssets.title,
+    slug: mediaAssets.slug,
+    description: mediaAssets.description,
+    media_type: mediaAssets.mediaType,
+    storage_id: mediaAssets.storageId,
+    object_key: mediaAssets.objectKey,
+    filename: mediaAssets.filename,
+    object_url: mediaAssets.objectUrl,
+    mime_type: mediaAssets.mimeType,
+    size_bytes: mediaAssets.sizeBytes,
+    status: mediaAssets.status,
+    visibility: mediaAssets.visibility,
+    lifecycle_status: mediaAssets.lifecycleStatus,
+    integrity_status: mediaAssets.integrityStatus,
+    integrity_message: mediaAssets.integrityMessage,
+    last_verified_at: mediaAssets.lastVerifiedAt,
+    trashed_at: mediaAssets.trashedAt,
+    warnings_json: storageObjects.warningsJson,
+    metadata_json: mediaAssets.metadataJson,
+    created_at: mediaAssets.createdAt,
+    updated_at: mediaAssets.updatedAt,
+};
+
+function readAssetTags(assetId: number) {
+    return db
+        .select({ slug: tags.slug })
+        .from(mediaTags)
+        .innerJoin(tags, eq(tags.id, mediaTags.tagId))
+        .where(eq(mediaTags.assetId, assetId))
+        .orderBy(asc(tags.slug))
+        .all()
+        .map((item) => item.slug);
+}
+
+function readAssetCollections(assetId: number) {
+    return db
+        .select({
+            id: collections.id,
+            title: collections.title,
+            kind: collections.kind,
+        })
+        .from(collectionAssets)
+        .innerJoin(collections, eq(collections.id, collectionAssets.collectionId))
+        .where(eq(collectionAssets.assetId, assetId))
+        .orderBy(asc(collectionAssets.position), asc(collections.title))
+        .all();
+}
+
+function readAssetLocations(assetId: number) {
+    return db
+        .select({
+            id: assetLocations.id,
+            asset_id: assetLocations.assetId,
+            content_type: assetLocations.contentType,
+            label: assetLocations.label,
+            raw_address: assetLocations.rawAddress,
+            formatted_address: assetLocations.formattedAddress,
+            google_place_id: assetLocations.googlePlaceId,
+            lat: assetLocations.lat,
+            lng: assetLocations.lng,
+            is_primary: assetLocations.isPrimary,
+            source: assetLocations.source,
+            source_ref: assetLocations.sourceRef,
+            status: assetLocations.status,
+            raw_response_json: assetLocations.rawResponseJson,
+            created_at: assetLocations.createdAt,
+            updated_at: assetLocations.updatedAt,
+        })
+        .from(assetLocations)
+        .where(eq(assetLocations.assetId, assetId))
+        .orderBy(desc(assetLocations.isPrimary), asc(assetLocations.id))
+        .all();
+}
+
+function readLatestStorageObject(assetId: number) {
+    const row = db
+        .select({
+            warnings_json: storageObjects.warningsJson,
+            sync_status: storageObjects.syncStatus,
+            last_error: storageObjects.lastError,
+        })
+        .from(storageObjects)
+        .where(eq(storageObjects.assetId, assetId))
+        .orderBy(desc(storageObjects.id))
+        .limit(1)
+        .get();
+    return row;
+}
+
+function mapLocationRefreshCandidate(row: {
+    id: number;
+    asset_id: number;
+    media_type: AssetMatch["media_type"];
+    source: string | null;
+    status: string | null;
+    label: string | null;
+    raw_address: string | null;
+    formatted_address: string | null;
+}): LocationRefreshCandidate {
+    return {
+        id: Number(row.id),
+        assetId: Number(row.asset_id),
+        mediaType: row.media_type,
+        source: row.source,
+        status: row.status,
+        label: row.label,
+        rawAddress: row.raw_address,
+        formattedAddress: row.formatted_address,
+    };
+}
+
+function hasRefreshableAddress(candidate: LocationRefreshCandidate) {
+    return Boolean(candidate.rawAddress || candidate.formattedAddress || candidate.label);
+}
+
+export function resolveCreatedByUserId(userId: string | null | undefined) {
+    const normalizedUserId = typeof userId === "string" ? userId.trim() : "";
+    if (!normalizedUserId) return null;
+
+    const existingUser = db
+        .select({ id: authUser.id })
+        .from(authUser)
+        .where(eq(authUser.id, normalizedUserId))
+        .limit(1)
+        .get();
+
+    return existingUser?.id || null;
 }
 
 export function listMediaAssets(filters?: {
@@ -89,171 +321,146 @@ export function listMediaAssets(filters?: {
     lifecycleStatus?: AssetLifecycleStatus | "all";
     integrityStatus?: AssetIntegrityStatus | "all";
 }) {
-    const conditions: string[] = [];
-    const params: unknown[] = [];
+    const conditions = [] as Array<ReturnType<typeof eq> | ReturnType<typeof or>>;
 
     if (filters?.query) {
-        conditions.push("(ma.title like ? or ma.slug like ? or ma.object_key like ?)");
         const query = `%${filters.query}%`;
-        params.push(query, query, query);
+        conditions.push(
+            or(
+                like(mediaAssets.title, query),
+                like(mediaAssets.slug, query),
+                like(mediaAssets.objectKey, query)
+            )
+        );
     }
     if (filters?.mediaType && filters.mediaType !== "all") {
-        conditions.push("ma.media_type = ?");
-        params.push(filters.mediaType);
+        conditions.push(eq(mediaAssets.mediaType, filters.mediaType as AssetMatch["media_type"]));
     }
     if (filters?.status && filters.status !== "all") {
-        conditions.push("ma.status = ?");
-        params.push(filters.status);
+        conditions.push(eq(mediaAssets.status, filters.status as RawAssetRecord["status"]));
     }
     if (filters?.visibility && filters.visibility !== "all") {
-        conditions.push("ma.visibility = ?");
-        params.push(filters.visibility);
+        conditions.push(eq(mediaAssets.visibility, filters.visibility as RawAssetRecord["visibility"]));
     }
     if (!filters?.lifecycleStatus || filters.lifecycleStatus === "active") {
-        conditions.push("ma.lifecycle_status = 'active'");
+        conditions.push(eq(mediaAssets.lifecycleStatus, "active"));
     } else if (filters.lifecycleStatus !== "all") {
-        conditions.push("ma.lifecycle_status = ?");
-        params.push(filters.lifecycleStatus);
+        conditions.push(eq(mediaAssets.lifecycleStatus, filters.lifecycleStatus));
     }
     if (filters?.integrityStatus && filters.integrityStatus !== "all") {
-        conditions.push("ma.integrity_status = ?");
-        params.push(filters.integrityStatus);
+        conditions.push(eq(mediaAssets.integrityStatus, filters.integrityStatus));
     }
 
-    const where = conditions.length > 0 ? `where ${conditions.join(" and ")}` : "";
-    const rows = sqlite
-        .prepare(`
-            select
-                ma.*,
-                so.warnings_json
-            from media_assets ma
-            left join storage_objects so
-                on so.asset_id = ma.id
-                and so.storage_id = ma.storage_id
-                and so.object_key = ma.object_key
-            ${where}
-            order by ma.updated_at desc, ma.id desc
-        `)
-        .all(...params) as RawAssetRecord[];
+    const rows = db
+        .select(assetListSelect)
+        .from(mediaAssets)
+        .leftJoin(
+            storageObjects,
+            and(
+                eq(storageObjects.assetId, mediaAssets.id),
+                eq(storageObjects.storageId, mediaAssets.storageId),
+                eq(storageObjects.objectKey, mediaAssets.objectKey)
+            )
+        )
+        .where(conditions.length ? and(...conditions) : undefined)
+        .orderBy(desc(mediaAssets.updatedAt), desc(mediaAssets.id))
+        .all();
 
     return rows.map((row) => ({
-        ...row,
+        ...normalizeAssetRow(row as SelectedAssetRow),
         warnings: parseJsonArray(row.warnings_json),
-        tags: sqlite
-            .prepare(`
-                select t.slug
-                from media_tags mt
-                join tags t on t.id = mt.tag_id
-                where mt.asset_id = ?
-                order by t.slug asc
-            `)
-            .all(row.id)
-            .map((item) => (item as { slug: string }).slug),
-        collections: sqlite
-            .prepare(`
-                select c.title, c.kind
-                from collection_assets ca
-                join collections c on c.id = ca.collection_id
-                where ca.asset_id = ?
-                order by ca.position asc, c.title asc
-            `)
-            .all(row.id),
+        tags: readAssetTags(Number(row.id)),
+        collections: readAssetCollections(Number(row.id)).map((item) => ({ title: item.title, kind: item.kind })),
     }));
 }
 
 export function getMediaAssetById(id: number) {
-    const asset = sqlite.prepare("select * from media_assets where id = ?").get(id) as RawAssetRecord | undefined;
+    const asset = db
+        .select({
+            id: mediaAssets.id,
+            title: mediaAssets.title,
+            slug: mediaAssets.slug,
+            description: mediaAssets.description,
+            media_type: mediaAssets.mediaType,
+            storage_id: mediaAssets.storageId,
+            object_key: mediaAssets.objectKey,
+            filename: mediaAssets.filename,
+            object_url: mediaAssets.objectUrl,
+            mime_type: mediaAssets.mimeType,
+            size_bytes: mediaAssets.sizeBytes,
+            status: mediaAssets.status,
+            visibility: mediaAssets.visibility,
+            lifecycle_status: mediaAssets.lifecycleStatus,
+            integrity_status: mediaAssets.integrityStatus,
+            integrity_message: mediaAssets.integrityMessage,
+            last_verified_at: mediaAssets.lastVerifiedAt,
+            trashed_at: mediaAssets.trashedAt,
+            metadata_json: mediaAssets.metadataJson,
+            created_at: mediaAssets.createdAt,
+            updated_at: mediaAssets.updatedAt,
+        })
+        .from(mediaAssets)
+        .where(eq(mediaAssets.id, id))
+        .limit(1)
+        .get();
     if (!asset) return null;
 
-    const tags = sqlite
-        .prepare(`
-            select t.slug
-            from media_tags mt
-            join tags t on t.id = mt.tag_id
-            where mt.asset_id = ?
-            order by t.slug asc
-        `)
-        .all(id)
-        .map((item) => (item as { slug: string }).slug);
+    const tags = readAssetTags(id);
+    const collections = readAssetCollections(id);
+    const locations = readAssetLocations(id);
+    const storageObject = readLatestStorageObject(id);
 
-    const collections = sqlite
-        .prepare(`
-            select c.id, c.title, c.kind
-            from collection_assets ca
-            join collections c on c.id = ca.collection_id
-            where ca.asset_id = ?
-            order by ca.position asc, c.title asc
-        `)
-        .all(id);
-
-    const locations = sqlite
-        .prepare(`
-            select *
-            from asset_locations
-            where asset_id = ?
-            order by is_primary desc, id asc
-        `)
-        .all(id);
-
-    const storageObject = sqlite
-        .prepare(`
-            select warnings_json, sync_status, last_error
-            from storage_objects
-            where asset_id = ?
-            order by id desc
-            limit 1
-        `)
-        .get(id) as { warnings_json?: string; sync_status?: string; last_error?: string | null } | undefined;
+    const photoExif = getStoredPhotoExif(id);
+    const locationConflicts = listLocationConflictRows(eq(assetLocationConflicts.assetId, id));
 
     return {
-        ...asset,
+        ...normalizeAssetRow(asset as SelectedAssetRow),
         warnings: parseJsonArray(storageObject?.warnings_json),
         syncStatus: storageObject?.sync_status || "normalized",
         lastError: storageObject?.last_error || null,
         tags,
         collections,
         locations,
+        photoExif,
+        locationConflicts,
     };
 }
 
 export function archiveMediaAsset(assetId: number) {
-    sqlite
-        .prepare(`
-            update media_assets
-            set status = 'archived',
-                updated_at = ?
-            where id = ?
-        `)
-        .run(now(), assetId);
+    db.update(mediaAssets)
+        .set({
+            status: "archived",
+            updatedAt: now(),
+        })
+        .where(eq(mediaAssets.id, assetId))
+        .run();
 }
 
 export function trashMediaAsset(assetId: number) {
     const timestamp = now();
-    sqlite
-        .prepare(`
-            update media_assets
-            set lifecycle_status = 'trashed',
-                trashed_at = ?,
-                updated_at = ?
-            where id = ?
-        `)
-        .run(timestamp, timestamp, assetId);
+    db.update(mediaAssets)
+        .set({
+            lifecycleStatus: "trashed",
+            trashedAt: timestamp,
+            updatedAt: timestamp,
+        })
+        .where(eq(mediaAssets.id, assetId))
+        .run();
 }
 
 export function restoreMediaAsset(assetId: number) {
-    sqlite
-        .prepare(`
-            update media_assets
-            set lifecycle_status = 'active',
-                trashed_at = null,
-                updated_at = ?
-            where id = ?
-        `)
-        .run(now(), assetId);
+    db.update(mediaAssets)
+        .set({
+            lifecycleStatus: "active",
+            trashedAt: null,
+            updatedAt: now(),
+        })
+        .where(eq(mediaAssets.id, assetId))
+        .run();
 }
 
 export function permanentlyDeleteMediaAsset(assetId: number) {
-    sqlite.prepare("delete from media_assets where id = ?").run(assetId);
+    db.delete(mediaAssets).where(eq(mediaAssets.id, assetId)).run();
 }
 
 export function setAssetIntegrity(assetId: number, input: {
@@ -261,81 +468,204 @@ export function setAssetIntegrity(assetId: number, input: {
     integrityMessage: string | null;
 }) {
     const timestamp = now();
-    sqlite
-        .prepare(`
-            update media_assets
-            set integrity_status = ?,
-                integrity_message = ?,
-                last_verified_at = ?,
-                updated_at = ?
-            where id = ?
-        `)
-        .run(input.integrityStatus, input.integrityMessage, timestamp, timestamp, assetId);
+    db.update(mediaAssets)
+        .set({
+            integrityStatus: input.integrityStatus,
+            integrityMessage: input.integrityMessage,
+            lastVerifiedAt: timestamp,
+            updatedAt: timestamp,
+        })
+        .where(eq(mediaAssets.id, assetId))
+        .run();
 }
 
 export function listAssetsForIntegrity(filters?: { lifecycleStatus?: AssetLifecycleStatus }) {
-    return sqlite
-        .prepare(`
-            select id, storage_id, object_key
-            from media_assets
-            where lifecycle_status = ?
-            order by id asc
-        `)
-        .all(filters?.lifecycleStatus || "active") as IntegrityAssetRecord[];
+    return db
+        .select({
+            id: mediaAssets.id,
+            storage_id: mediaAssets.storageId,
+            object_key: mediaAssets.objectKey,
+        })
+        .from(mediaAssets)
+        .where(eq(mediaAssets.lifecycleStatus, filters?.lifecycleStatus || "active"))
+        .orderBy(asc(mediaAssets.id))
+        .all() as IntegrityAssetRecord[];
 }
 
 export function findMediaAssetByReference(input: { assetId?: number | null; objectKey?: string | null }) {
     if (input.assetId) {
-        return sqlite
-            .prepare("select id, title, media_type from media_assets where id = ?")
-            .get(input.assetId) as AssetMatch | undefined;
+        const row = db
+            .select({
+                id: mediaAssets.id,
+                title: mediaAssets.title,
+                media_type: mediaAssets.mediaType,
+            })
+            .from(mediaAssets)
+            .where(eq(mediaAssets.id, input.assetId))
+            .limit(1)
+            .get();
+        return row as AssetMatch | undefined;
     }
 
     if (input.objectKey) {
-        return sqlite
-            .prepare("select id, title, media_type from media_assets where object_key = ?")
-            .get(input.objectKey) as AssetMatch | undefined;
+        const row = db
+            .select({
+                id: mediaAssets.id,
+                title: mediaAssets.title,
+                media_type: mediaAssets.mediaType,
+            })
+            .from(mediaAssets)
+            .where(eq(mediaAssets.objectKey, input.objectKey))
+            .limit(1)
+            .get();
+        return row as AssetMatch | undefined;
     }
 
     return undefined;
 }
 
+export function getRefreshableLocationForAsset(assetId: number) {
+    const rows = db
+        .select({
+            id: assetLocations.id,
+            asset_id: assetLocations.assetId,
+            media_type: mediaAssets.mediaType,
+            source: assetLocations.source,
+            status: assetLocations.status,
+            label: assetLocations.label,
+            raw_address: assetLocations.rawAddress,
+            formatted_address: assetLocations.formattedAddress,
+        })
+        .from(assetLocations)
+        .innerJoin(mediaAssets, eq(mediaAssets.id, assetLocations.assetId))
+        .where(and(eq(assetLocations.assetId, assetId), ne(assetLocations.source, "exif")))
+        .orderBy(desc(assetLocations.isPrimary), asc(assetLocations.id))
+        .all()
+        .map(mapLocationRefreshCandidate);
+
+    return rows.find(hasRefreshableAddress) || null;
+}
+
+export function listRefreshableLocations(options?: { mode?: "pending" | "force"; limit?: number }) {
+    const conditions = [ne(assetLocations.source, "exif")];
+    if (options?.mode !== "force") {
+        conditions.push(inArray(assetLocations.status, ["pending", "failed"]));
+    }
+
+    const query = db
+        .select({
+            id: assetLocations.id,
+            asset_id: assetLocations.assetId,
+            media_type: mediaAssets.mediaType,
+            source: assetLocations.source,
+            status: assetLocations.status,
+            label: assetLocations.label,
+            raw_address: assetLocations.rawAddress,
+            formatted_address: assetLocations.formattedAddress,
+        })
+        .from(assetLocations)
+        .innerJoin(mediaAssets, eq(mediaAssets.id, assetLocations.assetId))
+        .where(and(...conditions))
+        .orderBy(asc(assetLocations.assetId), desc(assetLocations.isPrimary), asc(assetLocations.id));
+
+    const rows = (typeof options?.limit === "number" ? query.limit(options.limit) : query).all();
+    return rows.map(mapLocationRefreshCandidate).filter(hasRefreshableAddress);
+}
+
+export function applyGeocodeToLocation(locationId: number, input: {
+    formattedAddress: string;
+    googlePlaceId?: string;
+    lat: number;
+    lng: number;
+    rawResponseJson: string;
+}) {
+    db.update(assetLocations)
+        .set({
+            formattedAddress: input.formattedAddress,
+            googlePlaceId: input.googlePlaceId || null,
+            lat: input.lat,
+            lng: input.lng,
+            status: "geocoded",
+            rawResponseJson: input.rawResponseJson,
+            updatedAt: now(),
+        })
+        .where(eq(assetLocations.id, locationId))
+        .run();
+}
+
+export function markLocationGeocodeFailed(locationId: number) {
+    db.update(assetLocations)
+        .set({
+            status: "failed",
+            updatedAt: now(),
+        })
+        .where(eq(assetLocations.id, locationId))
+        .run();
+}
+
 export function getDashboardStats() {
-    const readCount = (sql: string) => {
-        const row = sqlite.prepare(sql).get() as { count: number };
-        return row?.count || 0;
-    };
+    const reviewRow = db
+        .select({ count: count() })
+        .from(mediaAssets)
+        .where(inArray(mediaAssets.status, ["draft", "review"]))
+        .get();
+
+    const publishedRow = db
+        .select({ count: count() })
+        .from(mediaAssets)
+        .where(eq(mediaAssets.status, "published"))
+        .get();
+
+    const warningRow = db
+        .select({ count: count() })
+        .from(storageObjects)
+        .where(eq(storageObjects.syncStatus, "warning"))
+        .get();
+
+    const invalidRow = db
+        .select({ count: count() })
+        .from(storageObjects)
+        .where(eq(storageObjects.syncStatus, "invalid"))
+        .get();
+
+    const primaryLocationAssetIds = new Set(
+        db
+            .selectDistinct({ assetId: assetLocations.assetId })
+            .from(assetLocations)
+            .where(eq(assetLocations.isPrimary, true))
+            .all()
+            .map((row) => row.assetId)
+    );
+
+    const assetCountRow = db.select({ count: count() }).from(mediaAssets).get();
 
     return {
-        assets: readCount("select count(*) as count from media_assets"),
-        review: readCount("select count(*) as count from media_assets where status in ('draft', 'review')"),
-        warnings: readCount("select count(*) as count from storage_objects where sync_status = 'warning'"),
-        invalid: readCount("select count(*) as count from storage_objects where sync_status = 'invalid'"),
-        missingLocation: readCount(`
-            select count(*) as count
-            from media_assets ma
-            where not exists (
-                select 1 from asset_locations al
-                where al.asset_id = ma.id and al.is_primary = 1
-            )
-        `),
-        published: readCount("select count(*) as count from media_assets where status = 'published'"),
+        assets: assetCountRow?.count || 0,
+        review: reviewRow?.count || 0,
+        warnings: warningRow?.count || 0,
+        invalid: invalidRow?.count || 0,
+        missingLocation: (assetCountRow?.count || 0) - primaryLocationAssetIds.size,
+        published: publishedRow?.count || 0,
     };
 }
 
 export function listStorageReviewItems(limit = 100) {
-    return sqlite
-        .prepare(`
-            select *
-            from storage_objects
-            where sync_status in ('warning', 'invalid')
-            order by synced_at desc, id desc
-            limit ?
-        `)
-        .all(limit)
+    return db
+        .select({
+            id: storageObjects.id,
+            object_key: storageObjects.objectKey,
+            sync_status: storageObjects.syncStatus,
+            last_error: storageObjects.lastError,
+            warnings_json: storageObjects.warningsJson,
+        })
+        .from(storageObjects)
+        .where(inArray(storageObjects.syncStatus, ["warning", "invalid"]))
+        .orderBy(desc(storageObjects.syncedAt), desc(storageObjects.id))
+        .limit(limit)
+        .all()
         .map((row) => ({
-            ...(row as Record<string, unknown>),
-            warnings: parseJsonArray((row as { warnings_json?: string }).warnings_json),
+            ...row,
+            warnings: parseJsonArray(row.warnings_json),
         })) as StorageReviewItem[];
 }
 
@@ -354,55 +684,41 @@ export function upsertStorageObject(input: {
     assetId?: number | null;
     lastError?: string | null;
 }) {
-    sqlite
-        .prepare(`
-            insert into storage_objects (
-                storage_id,
-                folder_type,
-                object_key,
-                object_url,
-                mime_type,
-                size_bytes,
-                checksum,
-                etag,
-                last_modified,
-                synced_at,
-                sync_status,
-                warnings_json,
-                asset_id,
-                last_error
-            )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            on conflict(storage_id, object_key)
-            do update set
-                object_url = excluded.object_url,
-                mime_type = excluded.mime_type,
-                size_bytes = excluded.size_bytes,
-                checksum = excluded.checksum,
-                etag = excluded.etag,
-                last_modified = excluded.last_modified,
-                synced_at = excluded.synced_at,
-                sync_status = excluded.sync_status,
-                warnings_json = excluded.warnings_json,
-                asset_id = excluded.asset_id,
-                last_error = excluded.last_error
-        `)
-        .run(
-            input.storageId,
-            input.folderType,
-            input.objectKey,
-            input.objectUrl || null,
-            input.mimeType || null,
-            input.sizeBytes,
-            input.checksum || null,
-            input.eTag || null,
-            input.lastModified || null,
-            now(),
-            input.syncStatus,
-            JSON.stringify(input.warnings),
-            input.assetId || null,
-            input.lastError || null
-        );
+    const syncedAt = now();
+    db.insert(storageObjects)
+        .values({
+            storageId: input.storageId,
+            folderType: input.folderType,
+            objectKey: input.objectKey,
+            objectUrl: input.objectUrl || null,
+            mimeType: input.mimeType || null,
+            sizeBytes: input.sizeBytes,
+            checksum: input.checksum || null,
+            eTag: input.eTag || null,
+            lastModified: toDate(input.lastModified),
+            syncedAt,
+            syncStatus: input.syncStatus,
+            warningsJson: JSON.stringify(input.warnings),
+            assetId: input.assetId || null,
+            lastError: input.lastError || null,
+        })
+        .onConflictDoUpdate({
+            target: [storageObjects.storageId, storageObjects.objectKey],
+            set: {
+                objectUrl: input.objectUrl || null,
+                mimeType: input.mimeType || null,
+                sizeBytes: input.sizeBytes,
+                checksum: input.checksum || null,
+                eTag: input.eTag || null,
+                lastModified: toDate(input.lastModified),
+                syncedAt,
+                syncStatus: input.syncStatus,
+                warningsJson: JSON.stringify(input.warnings),
+                assetId: input.assetId || null,
+                lastError: input.lastError || null,
+            },
+        })
+        .run();
 }
 
 export function upsertMediaAssetFromObject(input: {
@@ -414,172 +730,164 @@ export function upsertMediaAssetFromObject(input: {
     mimeType?: string | null;
     sizeBytes: number;
     createdBy?: string | null;
+    width?: number | null;
+    height?: number | null;
     warnings: string[];
+    filename?: string | null;
 }) {
-    const existing = sqlite
-        .prepare("select id from media_assets where storage_id = ? and object_key = ?")
-        .get(input.storageId, input.objectKey) as { id: number } | undefined;
+    const existing = db
+        .select({ id: mediaAssets.id })
+        .from(mediaAssets)
+        .where(and(eq(mediaAssets.storageId, input.storageId), eq(mediaAssets.objectKey, input.objectKey)))
+        .limit(1)
+        .get();
     const slug = buildUniqueSlug(input.title, existing?.id);
     const effectiveStatus = input.warnings.length > 0 ? "review" : "draft";
+    const width = input.width ?? null;
+    const height = input.height ?? null;
+    const createdBy = resolveCreatedByUserId(input.createdBy);
 
     if (existing) {
-        sqlite
-            .prepare(`
-                update media_assets
-                set title = ?,
-                    slug = ?,
-                    media_type = ?,
-                    object_url = ?,
-                    mime_type = ?,
-                    size_bytes = ?,
-                    status = ?,
-                    updated_at = ?
-                where id = ?
-            `)
-            .run(
-                input.title,
+        db.update(mediaAssets)
+            .set({
+                title: input.title,
                 slug,
-                input.mediaType,
-                input.objectUrl || null,
-                input.mimeType || null,
-                input.sizeBytes,
-                effectiveStatus,
-                now(),
-                existing.id
-            );
+                mediaType: input.mediaType,
+                filename: input.filename ?? null,
+                objectUrl: input.objectUrl || null,
+                mimeType: input.mimeType || null,
+                sizeBytes: input.sizeBytes,
+                width,
+                height,
+                status: effectiveStatus,
+                updatedAt: now(),
+            })
+            .where(eq(mediaAssets.id, existing.id))
+            .run();
         return existing.id;
     }
 
-    const result = sqlite
-        .prepare(`
-            insert into media_assets (
-                title,
-                slug,
-                media_type,
-                storage_id,
-                object_key,
-                object_url,
-                mime_type,
-                size_bytes,
-                status,
-                visibility,
-                created_at,
-                updated_at,
-                created_by
-            )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'private', ?, ?, ?)
-        `)
-        .run(
-            input.title,
+    const created = db
+        .insert(mediaAssets)
+        .values({
+            title: input.title,
             slug,
-            input.mediaType,
-            input.storageId,
-            input.objectKey,
-            input.objectUrl || null,
-            input.mimeType || null,
-            input.sizeBytes,
-            effectiveStatus,
-            now(),
-            now(),
-            input.createdBy || null
-        );
-    return Number(result.lastInsertRowid);
+            mediaType: input.mediaType,
+            storageId: input.storageId,
+            objectKey: input.objectKey,
+            filename: input.filename ?? null,
+            objectUrl: input.objectUrl || null,
+            mimeType: input.mimeType || null,
+            sizeBytes: input.sizeBytes,
+            width,
+            height,
+            status: effectiveStatus,
+            visibility: "private",
+            createdAt: now(),
+            updatedAt: now(),
+            createdBy,
+        })
+        .returning({ id: mediaAssets.id })
+        .get();
+    return Number(created.id);
 }
 
 function ensureTag(slug: string) {
     const normalized = slugFromText(slug);
-    const existing = sqlite.prepare("select id from tags where slug = ?").get(normalized) as { id: number } | undefined;
+    const existing = db.select({ id: tags.id }).from(tags).where(eq(tags.slug, normalized)).limit(1).get();
     if (existing) return existing.id;
-    const result = sqlite
-        .prepare(`
-            insert into tags (label, slug, created_at)
-            values (?, ?, ?)
-        `)
-        .run(normalized, normalized, now());
-    return Number(result.lastInsertRowid);
+    const created = db
+        .insert(tags)
+        .values({
+            label: normalized,
+            slug: normalized,
+            createdAt: now(),
+        })
+        .returning({ id: tags.id })
+        .get();
+    return Number(created.id);
 }
 
 function ensureCollection(name: string) {
     const baseSlug = slugFromText(name);
-    const existing = sqlite.prepare("select id from collections where slug = ?").get(baseSlug) as { id: number } | undefined;
+    const existing = db
+        .select({ id: collections.id })
+        .from(collections)
+        .where(eq(collections.slug, baseSlug))
+        .limit(1)
+        .get();
     if (existing) return existing.id;
     const slug = buildUniqueSlug(name);
-    const result = sqlite
-        .prepare(`
-            insert into collections (title, slug, kind, created_at, updated_at)
-            values (?, ?, 'collection', ?, ?)
-        `)
-        .run(name.trim(), slug, now(), now());
-    return Number(result.lastInsertRowid);
+    const created = db
+        .insert(collections)
+        .values({
+            title: name.trim(),
+            slug,
+            kind: "collection",
+            createdAt: now(),
+            updatedAt: now(),
+        })
+        .returning({ id: collections.id })
+        .get();
+    return Number(created.id);
 }
 
 function replaceAssetTags(assetId: number, tagSlugs: string[]) {
-    sqlite.prepare("delete from media_tags where asset_id = ?").run(assetId);
+    db.delete(mediaTags).where(eq(mediaTags.assetId, assetId)).run();
     for (const slug of tagSlugs) {
         const tagId = ensureTag(slug);
-        sqlite
-            .prepare(`
-                insert into media_tags (asset_id, tag_id, applied_at)
-                values (?, ?, ?)
-            `)
-            .run(assetId, tagId, now());
+        db.insert(mediaTags)
+            .values({
+                assetId,
+                tagId,
+                appliedAt: now(),
+            })
+            .run();
     }
 }
 
 function replaceAssetCollections(assetId: number, collectionNames: string[]) {
-    sqlite.prepare("delete from collection_assets where asset_id = ?").run(assetId);
+    db.delete(collectionAssets).where(eq(collectionAssets.assetId, assetId)).run();
     collectionNames.forEach((name, index) => {
         const collectionId = ensureCollection(name.trim());
-        sqlite
-            .prepare(`
-                insert into collection_assets (collection_id, asset_id, position, added_at)
-                values (?, ?, ?, ?)
-            `)
-            .run(collectionId, assetId, index, now());
+        db.insert(collectionAssets)
+            .values({
+                collectionId,
+                assetId,
+                position: index,
+                addedAt: now(),
+            })
+            .run();
     });
 }
 
 function replaceAssetLocations(assetId: number, locations: AssetLocationInput[]) {
-    sqlite.prepare("delete from asset_locations where asset_id = ?").run(assetId);
+    db.delete(assetLocations)
+        .where(and(eq(assetLocations.assetId, assetId), ne(assetLocations.source, "exif")))
+        .run();
     for (const location of locations) {
-        sqlite
-            .prepare(`
-                insert into asset_locations (
-                    asset_id,
-                    content_type,
-                    label,
-                    raw_address,
-                    formatted_address,
-                    google_place_id,
-                    lat,
-                    lng,
-                    is_primary,
-                    source,
-                    source_ref,
-                    status,
-                    raw_response_json,
-                    created_at,
-                    updated_at
-                )
-                values (?, 'media', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `)
-            .run(
+        db.insert(assetLocations)
+            .values({
                 assetId,
-                location.label || null,
-                location.rawAddress || null,
-                location.formattedAddress || null,
-                location.googlePlaceId || null,
-                location.lat ?? null,
-                location.lng ?? null,
-                location.isPrimary ? 1 : 0,
-                location.source || "manual",
-                location.sourceRef || null,
-                location.status || "pending",
-                location.rawResponseJson || null,
-                now(),
-                now()
-            );
+                contentType: "media",
+                label: location.label || null,
+                rawAddress: location.rawAddress || null,
+                formattedAddress: location.formattedAddress || null,
+                googlePlaceId: location.googlePlaceId || null,
+                lat: location.lat ?? null,
+                lng: location.lng ?? null,
+                isPrimary: !!location.isPrimary,
+                source: location.source || "manual",
+                sourceRef: location.sourceRef || null,
+                status: location.status || "pending",
+                rawResponseJson: location.rawResponseJson || null,
+                createdAt: now(),
+                updatedAt: now(),
+            })
+            .run();
     }
+
+    reconcileStoredExifLocation(assetId);
 }
 
 export function saveImportedLocation(
@@ -588,48 +896,577 @@ export function saveImportedLocation(
     location: AssetLocationInput
 ) {
     if (mediaType === "image") {
-        sqlite.prepare("delete from asset_locations where asset_id = ?").run(assetId);
+        db.delete(assetLocations)
+            .where(and(eq(assetLocations.assetId, assetId), ne(assetLocations.source, "exif")))
+            .run();
     } else if (location.isPrimary) {
-        sqlite.prepare("update asset_locations set is_primary = 0 where asset_id = ?").run(assetId);
+        db.update(assetLocations)
+            .set({ isPrimary: false })
+            .where(eq(assetLocations.assetId, assetId))
+            .run();
     }
 
-    sqlite
-        .prepare(`
-            insert into asset_locations (
-                asset_id,
-                content_type,
-                label,
-                raw_address,
-                formatted_address,
-                google_place_id,
-                lat,
-                lng,
-                is_primary,
-                source,
-                source_ref,
-                status,
-                raw_response_json,
-                created_at,
-                updated_at
-            )
-            values (?, 'media', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
+    db.insert(assetLocations)
+        .values({
             assetId,
-            location.label || null,
-            location.rawAddress || null,
-            location.formattedAddress || null,
-            location.googlePlaceId || null,
-            location.lat ?? null,
-            location.lng ?? null,
-            location.isPrimary ? 1 : 0,
-            location.source || "import",
-            location.sourceRef || null,
-            location.status || "pending",
-            location.rawResponseJson || null,
-            now(),
-            now()
-        );
+            contentType: "media",
+            label: location.label || null,
+            rawAddress: location.rawAddress || null,
+            formattedAddress: location.formattedAddress || null,
+            googlePlaceId: location.googlePlaceId || null,
+            lat: location.lat ?? null,
+            lng: location.lng ?? null,
+            isPrimary: !!location.isPrimary,
+            source: location.source || "import",
+            sourceRef: location.sourceRef || null,
+            status: location.status || "pending",
+            rawResponseJson: location.rawResponseJson || null,
+            createdAt: now(),
+            updatedAt: now(),
+        })
+        .run();
+
+    reconcileStoredExifLocation(assetId);
+}
+
+const existingConflictLocation = alias(assetLocations, "existing_conflict_location");
+const candidateConflictLocation = alias(assetLocations, "candidate_conflict_location");
+
+function safeNumber(value: unknown): number | null {
+    if (value == null) return null;
+    const numeric = Number(value);
+    return Number.isNaN(numeric) ? null : numeric;
+}
+
+function safeString(value: unknown): string | null {
+    if (value == null) return null;
+    return String(value);
+}
+
+function mapConflictRow(row: Record<string, unknown>): LocationConflictRecord {
+    const resolutionValue =
+        row.resolution === "keep_exif" || row.resolution === "keep_existing"
+            ? (row.resolution as LocationConflictResolution)
+            : null;
+    const statusValue = row.status === "resolved" ? "resolved" : "pending";
+
+    return {
+        id: Number(row.id),
+        assetId: Number(row.asset_id),
+        assetTitle: safeString(row.asset_title) || "",
+        distanceMeters: safeNumber(row.distance_meters),
+        existingLocation: {
+            id: safeNumber(row.existing_location_id),
+            label: safeString(row.existing_label),
+            source: safeString(row.existing_source),
+            lat: safeNumber(row.existing_lat),
+            lng: safeNumber(row.existing_lng),
+        },
+        candidateLocation: {
+            id: safeNumber(row.candidate_location_id),
+            source: safeString(row.candidate_source),
+            lat: safeNumber(row.candidate_lat),
+            lng: safeNumber(row.candidate_lng),
+            createdAt: toMillis(row.candidate_created_at),
+        },
+        status: statusValue,
+        resolution: resolutionValue,
+        resolvedBy: safeString(row.resolved_by),
+        createdAt: toMillis(row.created_at) || 0,
+        resolvedAt: toMillis(row.resolved_at),
+    };
+}
+
+function listLocationConflictRows(whereCondition?: ReturnType<typeof eq>, limit?: number) {
+    const query = db
+        .select({
+            id: assetLocationConflicts.id,
+            asset_id: assetLocationConflicts.assetId,
+            asset_title: mediaAssets.title,
+            distance_meters: assetLocationConflicts.distanceMeters,
+            status: assetLocationConflicts.status,
+            resolution: assetLocationConflicts.resolution,
+            resolved_by: assetLocationConflicts.resolvedBy,
+            created_at: assetLocationConflicts.createdAt,
+            resolved_at: assetLocationConflicts.resolvedAt,
+            existing_location_id: existingConflictLocation.id,
+            existing_label: existingConflictLocation.label,
+            existing_source: existingConflictLocation.source,
+            existing_lat: existingConflictLocation.lat,
+            existing_lng: existingConflictLocation.lng,
+            candidate_location_id: candidateConflictLocation.id,
+            candidate_source: candidateConflictLocation.source,
+            candidate_lat: candidateConflictLocation.lat,
+            candidate_lng: candidateConflictLocation.lng,
+            candidate_created_at: candidateConflictLocation.createdAt,
+        })
+        .from(assetLocationConflicts)
+        .innerJoin(mediaAssets, eq(mediaAssets.id, assetLocationConflicts.assetId))
+        .leftJoin(
+            existingConflictLocation,
+            eq(existingConflictLocation.id, assetLocationConflicts.existingLocationId)
+        )
+        .leftJoin(
+            candidateConflictLocation,
+            eq(candidateConflictLocation.id, assetLocationConflicts.candidateLocationId)
+        )
+        .where(whereCondition)
+        .orderBy(desc(assetLocationConflicts.createdAt), desc(assetLocationConflicts.id));
+
+    const rows = (typeof limit === "number" ? query.limit(limit) : query).all();
+    return (rows as Record<string, unknown>[]).map(mapConflictRow);
+}
+
+function fetchConflictById(conflictId: number) {
+    return listLocationConflictRows(eq(assetLocationConflicts.id, conflictId), 1)[0] || null;
+}
+
+export function upsertPhotoExif(assetId: number, input: PhotoExifInput) {
+    const timestamp = now();
+    const metadataJson = input.metadata ? JSON.stringify(input.metadata) : null;
+    const gpsLat = input.location?.lat ?? null;
+    const gpsLng = input.location?.lng ?? null;
+    const gpsAltitude = input.location?.altitude ?? null;
+    const cameraId =
+        input.camera?.model || input.camera?.make
+            ? ensurePhotoCamera(input.camera?.make || null, input.camera?.model || "Unknown camera")
+            : null;
+    const lensId = input.lens?.model ? ensurePhotoLens(input.lens.model) : null;
+    const capturedAt = input.captureDate ? Date.parse(input.captureDate) : null;
+
+    const values = {
+        assetId,
+        cameraId,
+        lensId,
+        capturedAt: Number.isFinite(capturedAt) ? new Date(capturedAt as number) : null,
+        pixelWidth: input.pixelWidth ?? null,
+        pixelHeight: input.pixelHeight ?? null,
+        focalLengthMm: input.focalLength ?? null,
+        apertureFNumber: input.aperture ?? null,
+        exposureTimeText: input.exposureTime || null,
+        iso: input.iso ?? null,
+        orientation: input.orientation ?? null,
+        software: input.software || null,
+        gpsLat,
+        gpsLng,
+        gpsAltitudeM: gpsAltitude,
+        metadataJson,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+    };
+
+    db.insert(photoExif)
+        .values(values)
+        .onConflictDoUpdate({
+            target: photoExif.assetId,
+            set: {
+                cameraId,
+                lensId,
+                capturedAt: Number.isFinite(capturedAt) ? new Date(capturedAt as number) : null,
+                pixelWidth: input.pixelWidth ?? null,
+                pixelHeight: input.pixelHeight ?? null,
+                focalLengthMm: input.focalLength ?? null,
+                apertureFNumber: input.aperture ?? null,
+                exposureTimeText: input.exposureTime || null,
+                iso: input.iso ?? null,
+                orientation: input.orientation ?? null,
+                software: input.software || null,
+                gpsLat,
+                gpsLng,
+                gpsAltitudeM: gpsAltitude,
+                metadataJson,
+                updatedAt: timestamp,
+            },
+        })
+        .run();
+}
+
+function ensurePhotoCamera(make: string | null, model: string) {
+    const normalizedKey = normalizeExifKey(make, model);
+    const existing = db
+        .select({ id: photoCameras.id })
+        .from(photoCameras)
+        .where(eq(photoCameras.normalizedKey, normalizedKey))
+        .limit(1)
+        .get();
+    if (existing) return existing.id;
+
+    const created = db
+        .insert(photoCameras)
+        .values({
+            make,
+            model,
+            normalizedKey,
+            createdAt: now(),
+        })
+        .returning({ id: photoCameras.id })
+        .get();
+    return Number(created.id);
+}
+
+function ensurePhotoLens(label: string) {
+    const trimmedLabel = label.trim();
+    const normalizedKey = normalizeExifKey(trimmedLabel);
+    const existing = db
+        .select({ id: photoLenses.id })
+        .from(photoLenses)
+        .where(eq(photoLenses.normalizedKey, normalizedKey))
+        .limit(1)
+        .get();
+    if (existing) return existing.id;
+
+    const created = db
+        .insert(photoLenses)
+        .values({
+            label: trimmedLabel || "Unknown lens",
+            normalizedKey,
+            createdAt: now(),
+        })
+        .returning({ id: photoLenses.id })
+        .get();
+    return Number(created.id);
+}
+
+function getStoredPhotoExif(assetId: number): PhotoExifInput | null {
+    const row = db
+        .select({
+            captured_at: photoExif.capturedAt,
+            pixel_width: photoExif.pixelWidth,
+            pixel_height: photoExif.pixelHeight,
+            focal_length_mm: photoExif.focalLengthMm,
+            aperture_f_number: photoExif.apertureFNumber,
+            exposure_time_text: photoExif.exposureTimeText,
+            iso: photoExif.iso,
+            orientation: photoExif.orientation,
+            software: photoExif.software,
+            gps_lat: photoExif.gpsLat,
+            gps_lng: photoExif.gpsLng,
+            gps_altitude_m: photoExif.gpsAltitudeM,
+            metadata_json: photoExif.metadataJson,
+            camera_make: photoCameras.make,
+            camera_model: photoCameras.model,
+            lens_label: photoLenses.label,
+        })
+        .from(photoExif)
+        .leftJoin(photoCameras, eq(photoCameras.id, photoExif.cameraId))
+        .leftJoin(photoLenses, eq(photoLenses.id, photoExif.lensId))
+        .where(eq(photoExif.assetId, assetId))
+        .limit(1)
+        .get();
+    if (!row) return null;
+
+    return {
+        captureDate:
+            toMillis(row.captured_at) !== null
+                ? new Date(toMillis(row.captured_at) as number).toISOString()
+                : null,
+        pixelWidth: safeNumber(row.pixel_width),
+        pixelHeight: safeNumber(row.pixel_height),
+        focalLength: safeNumber(row.focal_length_mm),
+        aperture: safeNumber(row.aperture_f_number),
+        exposureTime: safeString(row.exposure_time_text),
+        iso: safeNumber(row.iso),
+        orientation: safeNumber(row.orientation),
+        software: safeString(row.software),
+        camera: {
+            make: safeString(row.camera_make),
+            model: safeString(row.camera_model),
+        },
+        lens: {
+            model: safeString(row.lens_label),
+        },
+        location:
+            safeNumber(row.gps_lat) !== null && safeNumber(row.gps_lng) !== null
+                ? {
+                      lat: Number(row.gps_lat),
+                      lng: Number(row.gps_lng),
+                      altitude: safeNumber(row.gps_altitude_m),
+                  }
+                : null,
+        metadata:
+            typeof row.metadata_json === "string"
+                ? (() => {
+                      try {
+                          return JSON.parse(row.metadata_json as string) as Record<string, unknown>;
+                      } catch {
+                          return null;
+                      }
+                  })()
+                : null,
+    };
+}
+
+export function reconcileStoredExifLocation(assetId: number) {
+    const stored = getStoredPhotoExif(assetId);
+    if (!stored) return null;
+    return reconcileExifLocation(assetId, stored);
+}
+
+function upsertLocationConflictRow(params: {
+    assetId: number;
+    existingLocationId: number;
+    candidateLocationId: number;
+    distance: number | null;
+    timestamp: Date;
+}) {
+    const existingConflict = db
+        .select({ id: assetLocationConflicts.id })
+        .from(assetLocationConflicts)
+        .where(
+            and(
+                eq(assetLocationConflicts.assetId, params.assetId),
+                eq(assetLocationConflicts.status, "pending")
+            )
+        )
+        .orderBy(desc(assetLocationConflicts.id))
+        .limit(1)
+        .get();
+
+    if (existingConflict) {
+        db.update(assetLocationConflicts)
+            .set({
+                existingLocationId: params.existingLocationId,
+                candidateLocationId: params.candidateLocationId,
+                distanceMeters: params.distance,
+                updatedAt: params.timestamp,
+            })
+            .where(eq(assetLocationConflicts.id, existingConflict.id))
+            .run();
+        return existingConflict.id;
+    }
+
+    const created = db
+        .insert(assetLocationConflicts)
+        .values({
+            assetId: params.assetId,
+            existingLocationId: params.existingLocationId,
+            candidateLocationId: params.candidateLocationId,
+            distanceMeters: params.distance,
+            resolution: null,
+            resolvedBy: null,
+            resolvedAt: null,
+            status: "pending",
+            createdAt: params.timestamp,
+            updatedAt: params.timestamp,
+        })
+        .returning({ id: assetLocationConflicts.id })
+        .get();
+    return Number(created.id);
+}
+
+function resolvePendingLocationConflicts(
+    assetId: number,
+    resolution: LocationConflictResolution,
+    timestamp: Date
+) {
+    db.update(assetLocationConflicts)
+        .set({
+            resolution,
+            resolvedBy: null,
+            resolvedAt: timestamp,
+            status: "resolved",
+            updatedAt: timestamp,
+        })
+        .where(
+            and(
+                eq(assetLocationConflicts.assetId, assetId),
+                eq(assetLocationConflicts.status, "pending")
+            )
+        )
+        .run();
+}
+
+export function reconcileExifLocation(assetId: number, input: PhotoExifInput) {
+    const location = input.location;
+    if (!location || typeof location.lat !== "number" || typeof location.lng !== "number") {
+        return null;
+    }
+    const timestamp = now();
+
+    const existingCandidate = db
+        .select({ id: assetLocations.id })
+        .from(assetLocations)
+        .where(and(eq(assetLocations.assetId, assetId), eq(assetLocations.source, "exif")))
+        .limit(1)
+        .get();
+    let candidateId = existingCandidate?.id;
+
+    if (candidateId) {
+        db.update(assetLocations)
+            .set({
+                label: "EXIF GPS",
+                lat: location.lat,
+                lng: location.lng,
+                source: "exif",
+                sourceRef: "exif",
+                status: "pending",
+                updatedAt: timestamp,
+            })
+            .where(eq(assetLocations.id, candidateId))
+            .run();
+    } else {
+        const inserted = db
+            .insert(assetLocations)
+            .values({
+                assetId,
+                contentType: "media",
+                label: "EXIF GPS",
+                lat: location.lat,
+                lng: location.lng,
+                isPrimary: false,
+                source: "exif",
+                sourceRef: "exif",
+                status: "pending",
+                createdAt: timestamp,
+                updatedAt: timestamp,
+            })
+            .returning({ id: assetLocations.id })
+            .get();
+        candidateId = Number(inserted.id);
+    }
+
+    const existingLocation = db
+        .select({
+            id: assetLocations.id,
+            lat: assetLocations.lat,
+            lng: assetLocations.lng,
+        })
+        .from(assetLocations)
+        .where(and(eq(assetLocations.assetId, assetId), ne(assetLocations.source, "exif")))
+        .orderBy(desc(assetLocations.isPrimary), asc(assetLocations.id))
+        .limit(1)
+        .get();
+
+    if (!existingLocation) {
+        db.update(assetLocations)
+            .set({
+                isPrimary: true,
+                status: "matched",
+                updatedAt: timestamp,
+            })
+            .where(eq(assetLocations.id, candidateId))
+            .run();
+        resolvePendingLocationConflicts(assetId, "keep_exif", timestamp);
+        return null;
+    }
+
+    const hasExistingCoords =
+        typeof existingLocation.lat === "number" && typeof existingLocation.lng === "number";
+    const distance = hasExistingCoords
+        ? distanceMeters(
+              { lat: location.lat, lng: location.lng },
+              {
+                  lat: existingLocation.lat as number,
+                  lng: existingLocation.lng as number,
+              }
+          )
+        : null;
+
+    const conflictNeeded =
+        !hasExistingCoords || (distance !== null && distance > EXIF_LOCATION_MATCH_DISTANCE_METERS);
+
+    if (conflictNeeded) {
+        db.update(assetLocations)
+            .set({ isPrimary: false, updatedAt: timestamp })
+            .where(eq(assetLocations.assetId, assetId))
+            .run();
+        db.update(assetLocations)
+            .set({ status: "matched", updatedAt: timestamp })
+            .where(eq(assetLocations.id, existingLocation.id))
+            .run();
+        db.update(assetLocations)
+            .set({ isPrimary: true, status: "pending", updatedAt: timestamp })
+            .where(eq(assetLocations.id, candidateId))
+            .run();
+
+        upsertLocationConflictRow({
+            assetId,
+            existingLocationId: existingLocation.id,
+            candidateLocationId: candidateId,
+            distance,
+            timestamp,
+        });
+        return null;
+    }
+
+    db.update(assetLocations)
+        .set({ isPrimary: false, status: "matched", updatedAt: timestamp })
+        .where(eq(assetLocations.id, candidateId))
+        .run();
+    db.update(assetLocations)
+        .set({ isPrimary: true, status: "matched", updatedAt: timestamp })
+        .where(eq(assetLocations.id, existingLocation.id))
+        .run();
+    resolvePendingLocationConflicts(assetId, "keep_existing", timestamp);
+
+    return null;
+}
+
+export function listPendingLocationConflicts(limit = 20) {
+    return listLocationConflictRows(eq(assetLocationConflicts.status, "pending"), limit);
+}
+
+export function resolveAssetLocationConflict(
+    conflictId: number,
+    resolution: LocationConflictResolution,
+    resolvedBy?: string | null
+) {
+    const conflictRow = db
+        .select({
+            asset_id: assetLocationConflicts.assetId,
+            existing_location_id: assetLocationConflicts.existingLocationId,
+            candidate_location_id: assetLocationConflicts.candidateLocationId,
+        })
+        .from(assetLocationConflicts)
+        .where(eq(assetLocationConflicts.id, conflictId))
+        .limit(1)
+        .get();
+    if (!conflictRow) {
+        throw new Error("Location conflict not found");
+    }
+    if (!conflictRow.candidate_location_id || !conflictRow.existing_location_id) {
+        throw new Error("Conflict missing location references");
+    }
+
+    const resolvedByUserId = resolveCreatedByUserId(resolvedBy);
+    const timestamp = now();
+    db.update(assetLocations)
+        .set({ isPrimary: false, updatedAt: timestamp })
+        .where(eq(assetLocations.assetId, conflictRow.asset_id))
+        .run();
+
+    if (resolution === "keep_exif") {
+        db.update(assetLocations)
+            .set({ isPrimary: true, status: "matched", updatedAt: timestamp })
+            .where(eq(assetLocations.id, conflictRow.candidate_location_id))
+            .run();
+        db.update(assetLocations)
+            .set({ status: "matched", updatedAt: timestamp })
+            .where(eq(assetLocations.id, conflictRow.existing_location_id))
+            .run();
+    } else {
+        db.update(assetLocations)
+            .set({ isPrimary: true, status: "matched", updatedAt: timestamp })
+            .where(eq(assetLocations.id, conflictRow.existing_location_id))
+            .run();
+        db.update(assetLocations)
+            .set({ status: "matched", updatedAt: timestamp })
+            .where(eq(assetLocations.id, conflictRow.candidate_location_id))
+            .run();
+    }
+
+    db.update(assetLocationConflicts)
+        .set({
+            resolution,
+            resolvedBy: resolvedByUserId,
+            resolvedAt: timestamp,
+            status: "resolved",
+            updatedAt: timestamp,
+        })
+        .where(eq(assetLocationConflicts.id, conflictId))
+        .run();
+
+    return fetchConflictById(conflictId);
 }
 
 export function updateMediaAsset(assetId: number, input: AssetUpdateInput) {
@@ -639,26 +1476,19 @@ export function updateMediaAsset(assetId: number, input: AssetUpdateInput) {
     }
 
     const title = input.title?.trim() || existing.title;
-    sqlite
-        .prepare(`
-            update media_assets
-            set title = ?,
-                slug = ?,
-                description = ?,
-                visibility = ?,
-                status = ?,
-                updated_at = ?
-            where id = ?
-        `)
-        .run(
+    const filename = input.filename !== undefined ? input.filename : existing.filename;
+    db.update(mediaAssets)
+        .set({
             title,
-            buildUniqueSlug(title, assetId),
-            input.description ?? existing.description ?? null,
-            input.visibility || existing.visibility,
-            input.status || existing.status,
-            now(),
-            assetId
-        );
+            slug: buildUniqueSlug(title, assetId),
+            description: input.description ?? existing.description ?? null,
+            visibility: input.visibility || existing.visibility,
+            status: input.status || existing.status,
+            filename: filename ?? null,
+            updatedAt: now(),
+        })
+        .where(eq(mediaAssets.id, assetId))
+        .run();
 
     if (input.tagSlugs) {
         replaceAssetTags(assetId, input.tagSlugs.filter(Boolean));

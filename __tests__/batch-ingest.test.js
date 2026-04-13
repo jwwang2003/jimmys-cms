@@ -8,16 +8,28 @@ const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 
+function applyAllDrizzleMigrations(database) {
+  const migrations = fs
+    .readdirSync(path.join(process.cwd(), "drizzle"))
+    .filter((name) => name.endsWith(".sql"))
+    .sort((left, right) => left.localeCompare(right));
+  if (migrations.length === 0) {
+    throw new Error("Missing drizzle SQL migrations");
+  }
+  for (const migration of migrations) {
+    database.exec(
+      fs.readFileSync(path.join(process.cwd(), "drizzle", migration), "utf8").replaceAll("--> statement-breakpoint", "")
+    );
+  }
+}
+
 (async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "jimmys-cms-batch-"));
   const dbPath = path.join(tempDir, "batch.sqlite");
   const db = new Database(dbPath);
 
   try {
-    const migrationSql = fs
-      .readFileSync(path.join(process.cwd(), "drizzle", "0000_careless_the_captain.sql"), "utf8")
-      .replaceAll("--> statement-breakpoint", "");
-    db.exec(migrationSql);
+    applyAllDrizzleMigrations(db);
     db.prepare(`
       insert into storage_locations (id, bucket_name, region, base_url, created_at, updated_at)
       values ('default', 's3.glorialan.com', 'us-east-2', null, ?, ?)
@@ -83,6 +95,51 @@ const Database = require("better-sqlite3");
 
     const location = db.prepare("select raw_address from asset_locations limit 1").get();
     assert.equal(location.raw_address, "Tokyo Tower");
+
+    const zeroPaddedSummary = await batchIngestMediaIntoDb(db, {
+      spreadsheet: {
+        fileName: "photography.csv",
+        bytes: Buffer.from(
+          "external_id,address,tags,country,city,place\n1,Casamar,beach,Panama,San Carlos,Casamar\n",
+          "utf8"
+        ),
+      },
+      mediaFiles: [
+        {
+          fileName: "001+Casamar+20190419.JPG",
+          mimeType: "image/jpeg",
+          bytes: new Uint8Array([4, 5, 6]),
+        },
+      ],
+      persistFile: async ({ fileName, mimeType, mediaType }) => {
+        const result = db.prepare(`
+          insert into media_assets (
+            title, slug, media_type, storage_id, object_key, object_url, mime_type, size_bytes, status, visibility, created_at, updated_at
+          )
+          values (?, ?, ?, 'default', ?, ?, ?, ?, 'draft', 'private', ?, ?)
+        `).run(
+          fileName,
+          `${fileName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-zero-padded`,
+          mediaType,
+          `content/${fileName}`,
+          `https://s3.glorialan.com.s3.us-east-2.amazonaws.com/content/${fileName}`,
+          mimeType,
+          3,
+          Date.now(),
+          Date.now()
+        );
+
+        return {
+          assetId: Number(result.lastInsertRowid),
+          mediaType,
+        };
+      },
+    });
+
+    assert.equal(zeroPaddedSummary.files, 1);
+    assert.equal(zeroPaddedSummary.imported, 1);
+    assert.equal(zeroPaddedSummary.unmatchedFiles, 0);
+    assert.equal(zeroPaddedSummary.unmatchedRows, 0);
 
     console.log("batch-ingest.test.js ok");
   } finally {

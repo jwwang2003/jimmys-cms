@@ -22,6 +22,14 @@ export function normalizeAssetUpdatePayload(input: Record<string, unknown>): Ass
     const lat = parseOptionalNumber(input.lat);
     const lng = parseOptionalNumber(input.lng);
     const shouldCreateLocation = Boolean(rawAddress || formattedAddress || lat !== null || lng !== null);
+    const normalizeTextField = (value: unknown) => {
+        if (value === null) return null;
+        const trimmed = String(value || "").trim();
+        return trimmed || undefined;
+    };
+    const normalizedFilename = normalizeTextField(
+        input.filename ?? input.originalFilename ?? input.displayFilename
+    );
 
     return {
         title: String(input.title || "").trim() || undefined,
@@ -41,7 +49,8 @@ export function normalizeAssetUpdatePayload(input: Record<string, unknown>): Ass
                       source: "manual",
                       status: lat !== null && lng !== null ? "geocoded" : "pending",
                   },
-              ]
+            ]
             : [],
+        filename: normalizedFilename,
     };
 }

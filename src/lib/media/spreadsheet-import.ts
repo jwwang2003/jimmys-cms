@@ -2,19 +2,29 @@ import { geocodeAddress, hasGoogleMapsKey } from "../google-maps";
 import { parseBatchFilename } from "./filename";
 import { slugFromText } from "./normalization";
 import { parseMetadataSpreadsheet, type ParsedMetadataRow } from "./spreadsheet";
+import { db as defaultDb } from "../../db";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import { and, asc, desc, eq, not, sql } from "drizzle-orm";
+import type * as BetterSqlite3 from "better-sqlite3";
+import {
+    assetLocationConflicts,
+    assetLocations,
+    collectionAssets,
+    collections,
+    mediaAssets,
+    mediaTags,
+    photoExif,
+    tags,
+} from "../../db/schema/schema";
 
-type DbLike = {
-    prepare: (sql: string) => unknown;
-};
+type SpreadsheetDb = typeof defaultDb;
+type RawSpreadsheetDb = BetterSqlite3.Database;
 
-type StatementLike = {
-    all: (...params: unknown[]) => unknown[];
-    get: (...params: unknown[]) => unknown;
-    run: (...params: unknown[]) => { lastInsertRowid?: number | bigint };
-};
-
-function stmt(db: DbLike, sql: string) {
-    return db.prepare(sql) as StatementLike;
+function ensureDrizzleDb(database: SpreadsheetDb | RawSpreadsheetDb) {
+    if ("select" in database) {
+        return database as SpreadsheetDb;
+    }
+    return drizzle(database as RawSpreadsheetDb);
 }
 
 type IndexedAsset = {
@@ -36,7 +46,7 @@ type PersistedBatchAsset = {
 };
 
 function now() {
-    return Date.now();
+    return new Date();
 }
 
 function parseJsonObject(value: string | null | undefined) {
@@ -63,6 +73,15 @@ function uniqueValues(values: string[]) {
     return out;
 }
 
+function normalizeExternalId(value: string | null | undefined) {
+    const normalized = String(value || "").trim().toLocaleLowerCase();
+    if (!normalized) return "";
+    if (/^\d+$/.test(normalized)) {
+        return normalized.replace(/^0+(\d+)$/, "$1") || "0";
+    }
+    return normalized;
+}
+
 function basename(value: string) {
     return value.split("/").pop() || value;
 }
@@ -71,11 +90,16 @@ function stem(value: string) {
     return basename(value).replace(/\.[^.]+$/, "");
 }
 
-function buildAssetIndex(db: DbLike) {
-    const assets = stmt(db, `
-            select id, title, media_type as mediaType, object_key as objectKey, metadata_json as metadataJson
-            from media_assets
-        `)
+function buildAssetIndex(db: SpreadsheetDb) {
+    const assets = db
+        .select({
+            id: mediaAssets.id,
+            title: mediaAssets.title,
+            mediaType: mediaAssets.mediaType,
+            objectKey: mediaAssets.objectKey,
+            metadataJson: mediaAssets.metadataJson,
+        })
+        .from(mediaAssets)
         .all() as IndexedAsset[];
 
     const byId = new Map<number, IndexedAsset>();
@@ -92,7 +116,7 @@ function buildAssetIndex(db: DbLike) {
         byStem.set(stem(asset.objectKey).toLocaleLowerCase(), asset);
         try {
             const parsed = parseBatchFilename(basename(asset.objectKey));
-            byFilenameId.set(parsed.id.toLocaleLowerCase(), asset);
+            byFilenameId.set(normalizeExternalId(parsed.id), asset);
         } catch {
             // Ignore assets that do not follow the batch filename convention.
         }
@@ -102,7 +126,7 @@ function buildAssetIndex(db: DbLike) {
         if (spreadsheet && typeof spreadsheet === "object") {
             const externalId = String((spreadsheet as Record<string, unknown>).externalId || "").trim();
             if (externalId) {
-                byExternalId.set(externalId.toLocaleLowerCase(), asset);
+                byExternalId.set(normalizeExternalId(externalId), asset);
             }
         }
     }
@@ -126,7 +150,7 @@ function findAssetForRow(row: ParsedMetadataRow, index: ReturnType<typeof buildA
         if (byStem) return byStem;
     }
     if (row.externalId) {
-        const external = row.externalId.toLocaleLowerCase();
+        const external = normalizeExternalId(row.externalId);
         const fromMetadata = index.byExternalId.get(external);
         if (fromMetadata) return fromMetadata;
         const fromFilename = index.byFilenameId.get(external);
@@ -137,37 +161,44 @@ function findAssetForRow(row: ParsedMetadataRow, index: ReturnType<typeof buildA
     return null;
 }
 
-function readAssetTags(db: DbLike, assetId: number) {
-    return stmt(db, `
-            select t.slug
-            from media_tags mt
-            join tags t on t.id = mt.tag_id
-            where mt.asset_id = ?
-            order by t.slug asc
-        `)
-        .all(assetId)
-        .map((item) => (item as { slug: string }).slug);
+function readAssetTags(db: SpreadsheetDb, assetId: number) {
+    return db
+        .select({
+            slug: tags.slug,
+        })
+        .from(mediaTags)
+        .innerJoin(tags, eq(tags.id, mediaTags.tagId))
+        .where(eq(mediaTags.assetId, assetId))
+        .orderBy(asc(tags.slug))
+        .all()
+        .map((row) => row.slug);
 }
 
-function readAssetCollections(db: DbLike, assetId: number) {
-    return stmt(db, `
-            select c.title
-            from collection_assets ca
-            join collections c on c.id = ca.collection_id
-            where ca.asset_id = ?
-            order by ca.position asc, c.title asc
-        `)
-        .all(assetId)
-        .map((item) => (item as { title: string }).title);
+function readAssetCollections(db: SpreadsheetDb, assetId: number) {
+    return db
+        .select({
+            title: collections.title,
+        })
+        .from(collectionAssets)
+        .innerJoin(collections, eq(collections.id, collectionAssets.collectionId))
+        .where(eq(collectionAssets.assetId, assetId))
+        .orderBy(asc(collectionAssets.position), asc(collections.title))
+        .all()
+        .map((row) => row.title);
 }
 
-function buildUniqueSlug(db: DbLike, base: string, currentAssetId?: number) {
+function buildUniqueSlug(db: SpreadsheetDb, base: string, currentAssetId?: number) {
     const cleanBase = slugFromText(base);
     let slug = cleanBase;
     let suffix = 2;
 
     while (true) {
-        const existing = stmt(db, "select id from media_assets where slug = ?").get(slug) as { id: number } | undefined;
+        const existing = db
+            .select({ id: mediaAssets.id })
+            .from(mediaAssets)
+            .where(eq(mediaAssets.slug, slug))
+            .limit(1)
+            .get() as { id: number } | undefined;
         if (!existing || existing.id === currentAssetId) {
             return slug;
         }
@@ -175,51 +206,65 @@ function buildUniqueSlug(db: DbLike, base: string, currentAssetId?: number) {
     }
 }
 
-function ensureTag(db: DbLike, value: string) {
+function ensureTag(db: SpreadsheetDb, value: string) {
     const slug = slugFromText(value);
-    const existing = stmt(db, "select id from tags where slug = ?").get(slug) as { id: number } | undefined;
+    const existing = db.select({ id: tags.id }).from(tags).where(eq(tags.slug, slug)).get();
     if (existing) return existing.id;
 
-    const result = stmt(db, `
-            insert into tags (label, slug, created_at)
-            values (?, ?, ?)
-        `)
-        .run(value.trim(), slug, now());
+    const result = db
+        .insert(tags)
+        .values({
+            label: value.trim(),
+            slug,
+            createdAt: now(),
+        })
+        .run();
     return Number(result.lastInsertRowid);
 }
 
-function ensureCollection(db: DbLike, name: string) {
+function ensureCollection(db: SpreadsheetDb, name: string) {
     const title = name.trim();
     const normalizedTitle = title.toLocaleLowerCase();
-    const existing = stmt(db, "select id from collections where lower(title) = ?").get(normalizedTitle) as {
-        id: number;
-    } | undefined;
+    const existing = db
+        .select({ id: collections.id })
+        .from(collections)
+        .where(sql`lower(${collections.title}) = ${normalizedTitle}`)
+        .get();
     if (existing) return existing.id;
 
-    const result = stmt(db, `
-            insert into collections (title, slug, kind, created_at, updated_at)
-            values (?, ?, 'collection', ?, ?)
-        `)
-        .run(title, buildUniqueSlug(db, title), now(), now());
+    const result = db
+        .insert(collections)
+        .values({
+            title,
+            slug: buildUniqueSlug(db, title),
+            kind: "collection",
+            createdAt: now(),
+            updatedAt: now(),
+        })
+        .run();
     return Number(result.lastInsertRowid);
 }
 
-function replaceAssetTags(db: DbLike, assetId: number, tags: string[]) {
-    stmt(db, "delete from media_tags where asset_id = ?").run(assetId);
+function replaceAssetTags(db: SpreadsheetDb, assetId: number, tags: string[]) {
+    db.delete(mediaTags).where(eq(mediaTags.assetId, assetId)).run();
     for (const tag of tags) {
         const tagId = ensureTag(db, tag);
-        stmt(db, "insert into media_tags (asset_id, tag_id, applied_at) values (?, ?, ?)").run(assetId, tagId, now());
+        db.insert(mediaTags).values({ assetId, tagId, appliedAt: now() }).run();
     }
 }
 
-function replaceAssetCollections(db: DbLike, assetId: number, collections: string[]) {
-    stmt(db, "delete from collection_assets where asset_id = ?").run(assetId);
+function replaceAssetCollections(db: SpreadsheetDb, assetId: number, collections: string[]) {
+    db.delete(collectionAssets).where(eq(collectionAssets.assetId, assetId)).run();
     collections.forEach((collection, index) => {
         const collectionId = ensureCollection(db, collection);
-        stmt(db, `
-            insert into collection_assets (collection_id, asset_id, position, added_at)
-            values (?, ?, ?, ?)
-        `).run(collectionId, assetId, index, now());
+        db.insert(collectionAssets)
+            .values({
+                collectionId,
+                assetId,
+                position: index,
+                addedAt: now(),
+            })
+            .run();
     });
 }
 
@@ -287,56 +332,223 @@ async function buildLocation(row: ParsedMetadataRow) {
     }
 }
 
-function saveImportedLocation(db: DbLike, assetId: number, mediaType: string, location: Awaited<ReturnType<typeof buildLocation>>) {
+function saveImportedLocation(
+    db: SpreadsheetDb,
+    assetId: number,
+    mediaType: string,
+    location: Awaited<ReturnType<typeof buildLocation>>
+) {
     if (!location) return;
+    const timestamp = now();
 
     if (mediaType === "image") {
-        stmt(db, "delete from asset_locations where asset_id = ?").run(assetId);
+        db.delete(assetLocations)
+            .where(and(eq(assetLocations.assetId, assetId), not(eq(assetLocations.source, "exif"))))
+            .run();
     } else {
-        stmt(db, "update asset_locations set is_primary = 0 where asset_id = ?").run(assetId);
+        db.update(assetLocations)
+            .set({ isPrimary: false, updatedAt: timestamp })
+            .where(eq(assetLocations.assetId, assetId))
+            .run();
     }
 
-    stmt(db, `
-        insert into asset_locations (
-            asset_id,
-            content_type,
-            label,
-            raw_address,
-            formatted_address,
-            google_place_id,
-            lat,
-            lng,
-            is_primary,
-            source,
-            source_ref,
-            status,
-            raw_response_json,
-            created_at,
-            updated_at
-        )
-        values (?, 'media', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-    `).run(
+    const result = db.insert(assetLocations).values({
         assetId,
-        location.label || null,
-        location.rawAddress || null,
-        location.formattedAddress || null,
-        location.googlePlaceId || null,
-        location.lat ?? null,
-        location.lng ?? null,
-        location.source,
-        location.sourceRef || null,
-        location.status,
-        location.rawResponseJson || null,
-        now(),
-        now()
-    );
+        contentType: "media",
+        label: location.label || null,
+        rawAddress: location.rawAddress || null,
+        formattedAddress: location.formattedAddress || null,
+        googlePlaceId: location.googlePlaceId || null,
+        lat: location.lat ?? null,
+        lng: location.lng ?? null,
+        isPrimary: true,
+        source: location.source,
+        sourceRef: location.sourceRef || null,
+        status: location.status,
+        rawResponseJson: location.rawResponseJson || null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+    }).run();
+
+    if (mediaType === "image") {
+        reconcileStoredExifLocation(db, assetId, Number(result.lastInsertRowid));
+    }
 }
 
-function updateAssetMetadataJson(db: DbLike, assetId: number, row: ParsedMetadataRow, options?: AppliedMetadataOptions) {
-    const existing = stmt(db, "select metadata_json from media_assets where id = ?").get(assetId) as
-        | { metadata_json?: string | null }
-        | undefined;
-    const metadata = parseJsonObject(existing?.metadata_json);
+const EXIF_LOCATION_MATCH_DISTANCE_METERS = 100;
+
+function resolvePendingExifConflicts(
+    db: SpreadsheetDb,
+    assetId: number,
+    resolution: "keep_exif" | "keep_existing",
+    timestamp: Date
+) {
+    db.update(assetLocationConflicts)
+        .set({
+            resolution,
+            resolvedBy: null,
+            resolvedAt: timestamp,
+            status: "resolved",
+            updatedAt: timestamp,
+        })
+        .where(
+            and(eq(assetLocationConflicts.assetId, assetId), eq(assetLocationConflicts.status, "pending"))
+        )
+        .run();
+}
+
+function distanceMeters(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
+    const earthRadius = 6371000;
+    const latDelta = ((b.lat - a.lat) * Math.PI) / 180;
+    const lngDelta = ((b.lng - a.lng) * Math.PI) / 180;
+    const lat1 = (a.lat * Math.PI) / 180;
+    const lat2 = (b.lat * Math.PI) / 180;
+    const hav =
+        Math.sin(latDelta / 2) ** 2 +
+        Math.sin(lngDelta / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+    return 2 * earthRadius * Math.atan2(Math.sqrt(hav), Math.sqrt(1 - hav));
+}
+
+function reconcileStoredExifLocation(db: SpreadsheetDb, assetId: number, existingLocationId: number) {
+    const exifRow = db
+        .select({
+            gpsLat: photoExif.gpsLat,
+            gpsLng: photoExif.gpsLng,
+            gpsAltitudeM: photoExif.gpsAltitudeM,
+        })
+        .from(photoExif)
+        .where(eq(photoExif.assetId, assetId))
+        .get();
+    if (!exifRow || exifRow.gpsLat == null || exifRow.gpsLng == null) {
+        return;
+    }
+
+    const existingExif = db
+        .select({ id: assetLocations.id })
+        .from(assetLocations)
+        .where(and(eq(assetLocations.assetId, assetId), eq(assetLocations.source, "exif")))
+        .orderBy(asc(assetLocations.id))
+        .limit(1)
+        .get();
+    const timestamp = now();
+    let exifLocationId = existingExif?.id;
+
+    if (!exifLocationId) {
+        const insertResult = db.insert(assetLocations).values({
+            assetId,
+            contentType: "media",
+            label: "EXIF GPS",
+            lat: exifRow.gpsLat,
+            lng: exifRow.gpsLng,
+            isPrimary: false,
+            source: "exif",
+            sourceRef: "exif",
+            status: "pending",
+            createdAt: timestamp,
+            updatedAt: timestamp,
+        }).run();
+        exifLocationId = Number(insertResult.lastInsertRowid);
+    }
+
+    db.update(assetLocations)
+        .set({
+            label: "EXIF GPS",
+            lat: exifRow.gpsLat,
+            lng: exifRow.gpsLng,
+            status: "pending",
+            updatedAt: timestamp,
+        })
+        .where(eq(assetLocations.id, exifLocationId))
+        .run();
+
+    const existingRow = db
+        .select({
+            id: assetLocations.id,
+            lat: assetLocations.lat,
+            lng: assetLocations.lng,
+        })
+        .from(assetLocations)
+        .where(eq(assetLocations.id, existingLocationId))
+        .get();
+    if (!existingRow) return;
+
+    const hasExistingCoords = existingRow.lat != null && existingRow.lng != null;
+    const distance =
+        hasExistingCoords
+            ? distanceMeters(
+                  { lat: Number(existingRow.lat), lng: Number(existingRow.lng) },
+                  { lat: Number(exifRow.gpsLat), lng: Number(exifRow.gpsLng) }
+              )
+            : null;
+
+    if (!hasExistingCoords || (distance !== null && distance > EXIF_LOCATION_MATCH_DISTANCE_METERS)) {
+        db.update(assetLocations)
+            .set({ isPrimary: false, updatedAt: timestamp })
+            .where(eq(assetLocations.assetId, assetId))
+            .run();
+        db.update(assetLocations)
+            .set({ isPrimary: false, status: "matched", updatedAt: timestamp })
+            .where(eq(assetLocations.id, existingLocationId))
+            .run();
+        db.update(assetLocations)
+            .set({ isPrimary: true, status: "pending", updatedAt: timestamp })
+            .where(eq(assetLocations.id, exifLocationId))
+            .run();
+
+        const existingConflict = db
+            .select({ id: assetLocationConflicts.id })
+            .from(assetLocationConflicts)
+            .where(
+                and(eq(assetLocationConflicts.assetId, assetId), eq(assetLocationConflicts.status, "pending"))
+            )
+            .orderBy(desc(assetLocationConflicts.id))
+            .limit(1)
+            .get();
+
+        if (existingConflict?.id) {
+            db.update(assetLocationConflicts)
+                .set({
+                    existingLocationId,
+                    candidateLocationId: exifLocationId,
+                    distanceMeters: distance,
+                    updatedAt: timestamp,
+                })
+                .where(eq(assetLocationConflicts.id, existingConflict.id))
+                .run();
+        } else {
+            db.insert(assetLocationConflicts)
+                .values({
+                    assetId,
+                    existingLocationId,
+                    candidateLocationId: exifLocationId,
+                    distanceMeters: distance,
+                    status: "pending",
+                    createdAt: timestamp,
+                    updatedAt: timestamp,
+                })
+                .run();
+        }
+        return;
+    }
+
+    db.update(assetLocations)
+        .set({ isPrimary: true, status: "matched", updatedAt: timestamp })
+        .where(eq(assetLocations.id, existingLocationId))
+        .run();
+    db.update(assetLocations)
+        .set({ isPrimary: false, status: "matched", updatedAt: timestamp })
+        .where(eq(assetLocations.id, exifLocationId))
+        .run();
+    resolvePendingExifConflicts(db, assetId, "keep_existing", timestamp);
+}
+
+function updateAssetMetadataJson(db: SpreadsheetDb, assetId: number, row: ParsedMetadataRow, options?: AppliedMetadataOptions) {
+    const existing = db
+        .select({ metadataJson: mediaAssets.metadataJson })
+        .from(mediaAssets)
+        .where(eq(mediaAssets.id, assetId))
+        .get();
+    const metadata = parseJsonObject(existing?.metadataJson);
 
     metadata.spreadsheet = {
         ...(metadata.spreadsheet && typeof metadata.spreadsheet === "object" ? metadata.spreadsheet : {}),
@@ -363,36 +575,44 @@ function updateAssetMetadataJson(db: DbLike, assetId: number, row: ParsedMetadat
         };
     }
 
-    stmt(db, `
-        update media_assets
-        set metadata_json = ?,
-            updated_at = ?
-        where id = ?
-    `).run(JSON.stringify(metadata), now(), assetId);
+    db.update(mediaAssets)
+        .set({
+            metadataJson: JSON.stringify(metadata),
+            updatedAt: now(),
+        })
+        .where(eq(mediaAssets.id, assetId))
+        .run();
 }
 
-function updateAssetBasics(db: DbLike, asset: IndexedAsset, row: ParsedMetadataRow, options?: AppliedMetadataOptions) {
+function updateAssetBasics(db: SpreadsheetDb, asset: IndexedAsset, row: ParsedMetadataRow, options?: AppliedMetadataOptions) {
     if (!row.title && !row.description && !options?.titleOverride) return;
 
-    const current = stmt(db, "select title, description from media_assets where id = ?").get(asset.id) as
-        | { title: string; description: string | null }
-        | undefined;
+    const current = db
+        .select({ title: mediaAssets.title, description: mediaAssets.description })
+        .from(mediaAssets)
+        .where(eq(mediaAssets.id, asset.id))
+        .get();
     if (!current) return;
 
     const nextTitle = options?.titleOverride?.trim() || row.title?.trim() || current.title;
     const nextDescription = row.description?.trim() || current.description;
 
-    stmt(db, `
-        update media_assets
-        set title = ?,
-            slug = ?,
-            description = ?,
-            updated_at = ?
-        where id = ?
-    `).run(nextTitle, buildUniqueSlug(db, nextTitle, asset.id), nextDescription || null, now(), asset.id);
+    db.update(mediaAssets)
+        .set({
+            title: nextTitle,
+            slug: buildUniqueSlug(db, nextTitle, asset.id),
+            description: nextDescription || null,
+            updatedAt: now(),
+        })
+        .where(eq(mediaAssets.id, asset.id))
+        .run();
 }
 
-export async function importMediaSpreadsheetIntoDb(db: DbLike, input: { fileName: string; bytes: Buffer | Uint8Array }) {
+export async function importMediaSpreadsheetIntoDb(
+    dbInput: SpreadsheetDb | RawSpreadsheetDb,
+    input: { fileName: string; bytes: Buffer | Uint8Array }
+) {
+    const db = ensureDrizzleDb(dbInput);
     const parsed = parseMetadataSpreadsheet(input);
     const summary = {
         fileName: input.fileName,
@@ -441,7 +661,7 @@ export async function importMediaSpreadsheetIntoDb(db: DbLike, input: { fileName
         summary.imported += 1;
 
         if (row.externalId) {
-            index.byExternalId.set(row.externalId.toLocaleLowerCase(), asset);
+            index.byExternalId.set(normalizeExternalId(row.externalId), asset);
         }
     }
 
@@ -452,7 +672,7 @@ function findRowByExternalId(rows: ParsedMetadataRow[]) {
     const byExternalId = new Map<string, ParsedMetadataRow>();
     for (const row of rows) {
         if (!row.externalId) continue;
-        byExternalId.set(row.externalId.toLocaleLowerCase(), row);
+        byExternalId.set(normalizeExternalId(row.externalId), row);
     }
     return byExternalId;
 }
@@ -466,19 +686,22 @@ function mediaTypeForUpload(fileName: string, mimeType?: string | null) {
     return null;
 }
 
-function getIndexedAssetById(db: DbLike, assetId: number) {
-    return stmt(
-        db,
-        `
-            select id, title, media_type as mediaType, object_key as objectKey, metadata_json as metadataJson
-            from media_assets
-            where id = ?
-        `
-    ).get(assetId) as IndexedAsset | undefined;
+function getIndexedAssetById(db: SpreadsheetDb, assetId: number) {
+    return db
+        .select({
+            id: mediaAssets.id,
+            title: mediaAssets.title,
+            mediaType: mediaAssets.mediaType,
+            objectKey: mediaAssets.objectKey,
+            metadataJson: mediaAssets.metadataJson,
+        })
+        .from(mediaAssets)
+        .where(eq(mediaAssets.id, assetId))
+        .get() as IndexedAsset | undefined;
 }
 
 export async function batchIngestMediaIntoDb(
-    db: DbLike,
+    dbInput: SpreadsheetDb | RawSpreadsheetDb,
     input: {
         spreadsheet: { fileName: string; bytes: Buffer | Uint8Array };
         mediaFiles: Array<{ fileName: string; bytes: Uint8Array; mimeType?: string | null }>;
@@ -492,6 +715,7 @@ export async function batchIngestMediaIntoDb(
         }) => Promise<PersistedBatchAsset>;
     }
 ) {
+    const db = ensureDrizzleDb(dbInput);
     const parsedSpreadsheet = parseMetadataSpreadsheet(input.spreadsheet);
     const rowsByExternalId = findRowByExternalId(parsedSpreadsheet.rows);
     const summary = {
@@ -518,7 +742,7 @@ export async function batchIngestMediaIntoDb(
             continue;
         }
 
-        const matchedRow = rowsByExternalId.get(parsedFileName.id.toLocaleLowerCase());
+        const matchedRow = rowsByExternalId.get(normalizeExternalId(parsedFileName.id));
         if (!matchedRow) {
             summary.unmatchedFiles += 1;
             continue;
@@ -578,7 +802,7 @@ export async function batchIngestMediaIntoDb(
 
         summary.imported += 1;
         if (matchedRow.externalId) {
-            rowsByExternalId.delete(matchedRow.externalId.toLocaleLowerCase());
+            rowsByExternalId.delete(normalizeExternalId(matchedRow.externalId));
         }
     }
 
@@ -587,6 +811,6 @@ export async function batchIngestMediaIntoDb(
 }
 
 export async function importMediaSpreadsheet(input: { fileName: string; bytes: Buffer | Uint8Array }) {
-    const { sqlite } = await import("../../db");
-    return importMediaSpreadsheetIntoDb(sqlite, input);
+    const { db } = await import("../../db");
+    return importMediaSpreadsheetIntoDb(db, input);
 }

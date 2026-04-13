@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 
+import { db } from "@/db";
 import { canEdit } from "@/lib/authz";
 import { getCurrentSession } from "@/lib/session";
 import { hasGoogleMapsKey } from "@/lib/google-maps";
-import { importMediaSpreadsheet } from "@/lib/media/spreadsheet-import";
-import { readSpreadsheetImportFile } from "@/lib/media/spreadsheet-files";
+import { importMediaSpreadsheetIntoDb } from "@/lib/media/spreadsheet-import";
+import { readSpreadsheetUpload } from "@/lib/media/spreadsheet-upload";
 
 export const runtime = "nodejs";
 
@@ -18,14 +19,14 @@ export async function POST(request: Request) {
     }
 
     try {
-        const body = await request.json().catch(() => ({}));
-        const fileName = String(body.fileName || "");
-        if (!fileName.trim()) {
-            return NextResponse.json({ error: "Missing import file name" }, { status: 400 });
+        const form = await request.formData();
+        const spreadsheetFile = form.get("spreadsheet");
+        if (!(spreadsheetFile instanceof File)) {
+            return NextResponse.json({ error: "Missing spreadsheet file upload" }, { status: 400 });
         }
 
-        const file = await readSpreadsheetImportFile(fileName);
-        const summary = await importMediaSpreadsheet(file);
+        const spreadsheet = await readSpreadsheetUpload(spreadsheetFile);
+        const summary = await importMediaSpreadsheetIntoDb(db, spreadsheet);
         return NextResponse.json({
             ok: true,
             summary,
@@ -33,6 +34,12 @@ export async function POST(request: Request) {
         });
     } catch (error) {
         const message = error instanceof Error ? error.message : "Spreadsheet import failed";
-        return NextResponse.json({ error: message }, { status: 500 });
+        const status =
+            message === "Missing spreadsheet file upload" ||
+            message === "Unsupported spreadsheet file type" ||
+            message === "Spreadsheet file is empty"
+                ? 400
+                : 500;
+        return NextResponse.json({ error: message }, { status });
     }
 }

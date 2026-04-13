@@ -1,14 +1,22 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Alert, Button, Group, Paper, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { Alert, Button, Group, Paper, Pill, PillGroup, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
+
+import { GeocodeRefreshPanel } from "./GeocodeRefreshPanel";
 
 type AssetDetail = {
   id: number;
   title: string;
   description: string | null;
+  media_type: string;
+  object_url: string | null;
+  object_key: string;
   status: string;
   visibility: string;
+  integrity_status: string;
+  integrity_message?: string | null;
   tags: string[];
   collections: { title: string }[];
   locations: Array<{
@@ -16,17 +24,23 @@ type AssetDetail = {
     formatted_address?: string | null;
     lat?: number | null;
     lng?: number | null;
+    source?: string | null;
+    status?: string | null;
   }>;
   warnings: string[];
+  filename?: string | null;
 };
 
 export function AssetEditor({ asset, editable }: { asset: AssetDetail; editable: boolean }) {
+  const router = useRouter();
   const [title, setTitle] = useState(asset.title);
   const [description, setDescription] = useState(asset.description || "");
   const [status, setStatus] = useState(asset.status);
   const [visibility, setVisibility] = useState(asset.visibility);
-  const [tagSlugs, setTagSlugs] = useState(asset.tags.join(", "));
+  const [tagSlugs, setTagSlugs] = useState(asset.tags);
+  const [tagDraft, setTagDraft] = useState("");
   const [collectionNames, setCollectionNames] = useState(asset.collections.map((collection) => collection.title).join(", "));
+  const [filename, setFilename] = useState(asset.filename || "");
   const [rawAddress, setRawAddress] = useState(asset.locations[0]?.raw_address || "");
   const [formattedAddress, setFormattedAddress] = useState(asset.locations[0]?.formatted_address || "");
   const [lat, setLat] = useState(asset.locations[0]?.lat?.toString() || "");
@@ -34,6 +48,19 @@ export function AssetEditor({ asset, editable }: { asset: AssetDetail; editable:
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  function addTag(value: string) {
+    const normalized = value.trim();
+    if (!normalized) return;
+    setTagSlugs((current) =>
+      current.some((tag) => tag.toLowerCase() === normalized.toLowerCase()) ? current : [...current, normalized]
+    );
+    setTagDraft("");
+  }
+
+  function removeTag(tagToRemove: string) {
+    setTagSlugs((current) => current.filter((tag) => tag !== tagToRemove));
+  }
 
   async function save() {
     setSaving(true);
@@ -50,6 +77,7 @@ export function AssetEditor({ asset, editable }: { asset: AssetDetail; editable:
           visibility,
           tagSlugs,
           collectionNames,
+          filename,
           rawAddress,
           formattedAddress,
           lat,
@@ -69,8 +97,14 @@ export function AssetEditor({ asset, editable }: { asset: AssetDetail; editable:
   }
 
   return (
-    <Paper withBorder radius="lg" p="lg">
-      <Stack gap="md">
+    <Paper
+      withBorder
+      radius="lg"
+      p="md"
+      bg="rgba(18, 20, 26, 0.92)"
+      style={{ borderColor: "rgba(255, 255, 255, 0.08)" }}
+    >
+      <Stack gap="sm">
         {!editable && (
           <Alert color="yellow" variant="light">
             Guest sessions are read-only.
@@ -86,6 +120,12 @@ export function AssetEditor({ asset, editable }: { asset: AssetDetail; editable:
 
         <TextInput label="Title" value={title} onChange={(event) => setTitle(event.currentTarget.value)} disabled={!editable} />
         <Textarea label="Description" value={description} onChange={(event) => setDescription(event.currentTarget.value)} disabled={!editable} />
+        <TextInput
+          label="Filename"
+          value={filename}
+          onChange={(event) => setFilename(event.currentTarget.value)}
+          disabled={!editable}
+        />
         <Group grow>
           <Select
             label="Status"
@@ -112,7 +152,42 @@ export function AssetEditor({ asset, editable }: { asset: AssetDetail; editable:
           />
         </Group>
 
-        <TextInput label="Tags" value={tagSlugs} onChange={(event) => setTagSlugs(event.currentTarget.value)} disabled={!editable} />
+        <Stack gap={6}>
+          <Text size="xs" fw={700} tt="uppercase" c="dimmed">
+            Tags
+          </Text>
+          <PillGroup>
+            {tagSlugs.map((tag) => (
+              <Pill
+                key={tag}
+                withRemoveButton={editable}
+                onRemove={() => removeTag(tag)}
+                removeButtonProps={{ "aria-label": `Remove tag ${tag}` }}
+              >
+                {tag}
+              </Pill>
+            ))}
+          </PillGroup>
+          <Group align="end">
+            <TextInput
+              label="Add tag"
+              placeholder="portrait, travel, archive..."
+              value={tagDraft}
+              onChange={(event) => setTagDraft(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  addTag(tagDraft);
+                }
+              }}
+              disabled={!editable}
+              style={{ flex: 1 }}
+            />
+            <Button variant="default" onClick={() => addTag(tagDraft)} disabled={!editable || !tagDraft.trim()}>
+              Add tag
+            </Button>
+          </Group>
+        </Stack>
         <TextInput
           label="Collections"
           description="Comma-separated collection names"
@@ -121,7 +196,7 @@ export function AssetEditor({ asset, editable }: { asset: AssetDetail; editable:
           disabled={!editable}
         />
 
-        <Text size="sm" fw={600}>Primary location</Text>
+        <Text size="xs" fw={700} tt="uppercase" c="dimmed">Primary location</Text>
         <TextInput label="Raw address" value={rawAddress} onChange={(event) => setRawAddress(event.currentTarget.value)} disabled={!editable} />
         <TextInput
           label="Formatted address"
@@ -137,6 +212,21 @@ export function AssetEditor({ asset, editable }: { asset: AssetDetail; editable:
         <Group justify="end">
           <Button onClick={save} loading={saving} disabled={!editable}>Save asset</Button>
         </Group>
+
+        <GeocodeRefreshPanel
+          editable={editable}
+          scope="asset"
+          assetId={asset.id}
+          locations={asset.locations}
+          onAssetRefreshed={(nextAsset) => {
+            const primary = nextAsset.locations?.[0];
+            setRawAddress(primary?.raw_address || "");
+            setFormattedAddress(primary?.formatted_address || "");
+            setLat(primary?.lat != null ? String(primary.lat) : "");
+            setLng(primary?.lng != null ? String(primary.lng) : "");
+            router.refresh();
+          }}
+        />
       </Stack>
     </Paper>
   );

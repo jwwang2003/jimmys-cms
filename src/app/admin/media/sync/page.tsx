@@ -1,18 +1,20 @@
 import { Card, Stack, Table, TableTbody, TableTd, TableTh, TableThead, TableTr, Text, Title } from "@mantine/core";
 
 import { BatchIngestForm } from "@/components/admin/BatchIngestForm";
+import { ExifConflictPanel } from "@/components/admin/ExifConflictPanel";
+import { GeocodeRefreshPanel } from "@/components/admin/GeocodeRefreshPanel";
 import { IntegrityCheckPanel } from "@/components/admin/IntegrityCheckPanel";
 import { LocationImportForm } from "@/components/admin/LocationImportForm";
 import { SpreadsheetImportForm } from "@/components/admin/SpreadsheetImportForm";
 import { SyncRunner } from "@/components/admin/SyncRunner";
 import { canEdit, requireCmsSession } from "@/lib/authz";
 import { listStorageReviewItems } from "@/lib/media/repository";
-import { listSpreadsheetImportFiles } from "@/lib/media/spreadsheet-files";
+import { getPendingExifLocationConflicts } from "@/lib/media/service";
 
 export default async function MediaSyncPage() {
   const session = await requireCmsSession();
   const reviewItems = listStorageReviewItems(50);
-  const spreadsheetFiles = await listSpreadsheetImportFiles();
+  const pendingExifConflicts = getPendingExifLocationConflicts(20);
 
   return (
     <Stack gap="xl">
@@ -25,8 +27,10 @@ export default async function MediaSyncPage() {
 
       <SyncRunner editable={canEdit(session.role)} />
       <IntegrityCheckPanel editable={canEdit(session.role)} />
-      <BatchIngestForm editable={canEdit(session.role)} files={spreadsheetFiles} />
-      <SpreadsheetImportForm editable={canEdit(session.role)} files={spreadsheetFiles} />
+      <GeocodeRefreshPanel editable={canEdit(session.role)} scope="bulk" />
+      <ExifConflictPanel editable={canEdit(session.role)} conflicts={pendingExifConflicts} />
+      <BatchIngestForm editable={canEdit(session.role)} />
+      <SpreadsheetImportForm editable={canEdit(session.role)} />
       <LocationImportForm editable={canEdit(session.role)} />
 
       <Card withBorder radius="lg" p="lg">

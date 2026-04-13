@@ -1,31 +1,29 @@
 "use client";
 
 import { useState } from "react";
-import { Alert, Button, Group, Paper, Select, Stack, Text } from "@mantine/core";
+import { Alert, Button, Group, Paper, Stack, Text } from "@mantine/core";
 
-export function SpreadsheetImportForm({
-  editable,
-  files,
-}: {
-  editable: boolean;
-  files: string[];
-}) {
-  const [fileName, setFileName] = useState<string | null>(files[0] || null);
+export function SpreadsheetImportForm({ editable }: { editable: boolean }) {
+  const [spreadsheetFile, setSpreadsheetFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function submit() {
-    if (!fileName) return;
+    if (!spreadsheetFile) {
+      setError("Select a spreadsheet file.");
+      return;
+    }
 
     setLoading(true);
     setError(null);
     setMessage(null);
     try {
+      const form = new FormData();
+      form.append("spreadsheet", spreadsheetFile);
       const res = await fetch("/api/admin/media/metadata-import", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileName }),
+        body: form,
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -36,7 +34,7 @@ export function SpreadsheetImportForm({
         ? "Google geocoding enabled."
         : "Google key missing, unmatched addresses were stored without geocoding.";
       setMessage(
-        `Imported ${data.summary.imported}/${data.summary.rows} rows from ${fileName}. Unmatched ${data.summary.unmatched}. Tags ${data.summary.updatedTags}. Collections ${data.summary.updatedCollections}. ${mode}`
+        `Imported ${data.summary.imported}/${data.summary.rows} rows from ${spreadsheetFile.name}. Unmatched ${data.summary.unmatched}. Tags ${data.summary.updatedTags}. Collections ${data.summary.updatedCollections}. ${mode}`
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Spreadsheet import failed");
@@ -50,23 +48,20 @@ export function SpreadsheetImportForm({
       <Stack gap="sm">
         <Text fw={600}>Import spreadsheet metadata</Text>
         <Text size="sm" c="dimmed">
-          Loads `.xlsx` or `.csv` files from the local `data/` folder and merges tags, collections, and location metadata into
+          Upload a V1 `.xlsx`, `.xls`, or `.csv` spreadsheet and merge tags, collections, and location metadata into
           existing assets. Rows that do not match an asset are skipped instead of aborting the batch.
         </Text>
         {!editable && <Alert color="yellow" variant="light">Guests can review import sources but cannot run the import.</Alert>}
-        {files.length === 0 && <Alert color="yellow" variant="light">No spreadsheet files were found in the `data/` folder.</Alert>}
         {error && <Alert color="red" variant="light">{error}</Alert>}
         {message && <Alert color="green" variant="light">{message}</Alert>}
-        <Select
-          label="Spreadsheet file"
-          data={files}
-          value={fileName}
-          onChange={setFileName}
-          disabled={!editable || files.length === 0}
-          searchable
+        <input
+          type="file"
+          accept=".csv,.xlsx,.xls"
+          onChange={(event) => setSpreadsheetFile(event.currentTarget.files?.[0] ?? null)}
+          disabled={!editable}
         />
         <Group justify="end">
-          <Button onClick={submit} loading={loading} disabled={!editable || !fileName}>Import spreadsheet</Button>
+          <Button onClick={submit} loading={loading} disabled={!editable || !spreadsheetFile}>Import spreadsheet</Button>
         </Group>
       </Stack>
     </Paper>

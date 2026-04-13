@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { canEdit } from "@/lib/authz";
 import { getCurrentSession } from "@/lib/session";
 import { normalizeAssetUpdatePayload } from "@/lib/media/forms";
-import { applyMediaUpdate, getMediaDetail } from "@/lib/media/service";
+import { applyMediaUpdate, getMediaDetail, refreshMediaAssetGeolocation } from "@/lib/media/service";
 
 export const runtime = "nodejs";
 
@@ -42,4 +42,25 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const body = await request.json();
     const asset = applyMediaUpdate(getAssetId(id), normalizeAssetUpdatePayload(body));
     return NextResponse.json({ ok: true, asset });
+}
+
+export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+    const session = await getCurrentSession();
+    if (!session) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (!canEdit(session.role)) {
+        return NextResponse.json({ error: "Guests have read-only access" }, { status: 403 });
+    }
+
+    const { id } = await context.params;
+    const body = await request.json().catch(() => ({}));
+    const action = String(body.action || "");
+
+    if (action !== "refreshGeocode") {
+        return NextResponse.json({ error: "Unsupported action" }, { status: 400 });
+    }
+
+    const result = await refreshMediaAssetGeolocation(getAssetId(id));
+    return NextResponse.json({ ok: true, ...result });
 }

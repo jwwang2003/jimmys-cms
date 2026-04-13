@@ -117,6 +117,9 @@ Locations can now be imported from the admin sync workspace using pasted CSV dat
 If `GOOGLE_MAPS_API_KEY` is configured, imported rows without coordinates are geocoded through Google Maps. If the key is missing,
 rows still import and are stored as `pending` so the workflow stays tolerant.
 
+When local network access needs a proxy, set `GOOGLE_MAPS_PROXY_URL` such as `http://127.0.0.1:7890`. Server-side imports and
+manual geocode refreshes will route Google Maps requests through that proxy.
+
 ## Media Library Schema
 
 All CMS media metadata is modeled with Drizzle (see `src/db/schema/schema.ts`). The binary objects live in S3, while SQLite only
