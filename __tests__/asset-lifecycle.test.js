@@ -38,6 +38,7 @@ const Database = require("better-sqlite3");
       restoreMediaAsset,
       trashMediaAsset,
     } = require("../src/lib/media/repository.ts");
+    const { applyMediaLifecycleAction } = require("../src/lib/media/service.ts");
     ({ sqlite: importedSqlite } = require("../src/db/index.ts"));
 
     db.prepare(`
@@ -123,6 +124,22 @@ const Database = require("better-sqlite3");
     `).get(insertResult.lastInsertRowid);
     assert.equal(asset.lifecycle_status, "active");
     assert.equal(asset.trashed_at, null);
+
+    await applyMediaLifecycleAction("trash", { assetId: Number(insertResult.lastInsertRowid) });
+    asset = db.prepare(`
+      select lifecycle_status
+      from media_assets
+      where id = ?
+    `).get(insertResult.lastInsertRowid);
+    assert.equal(asset.lifecycle_status, "trashed");
+
+    await applyMediaLifecycleAction("restore", { assetId: Number(insertResult.lastInsertRowid) });
+    asset = db.prepare(`
+      select lifecycle_status
+      from media_assets
+      where id = ?
+    `).get(insertResult.lastInsertRowid);
+    assert.equal(asset.lifecycle_status, "active");
 
     listed = listMediaAssets();
     assert.deepEqual(listed.map((item) => item.id), [Number(insertResult.lastInsertRowid)]);

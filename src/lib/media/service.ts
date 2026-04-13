@@ -4,12 +4,16 @@ import { buildKey, getS3 } from "@/lib/s3";
 import { verifyS3ObjectIntegrity } from "./integrity";
 import { classifyStorageObject } from "./normalization";
 import {
+    archiveMediaAsset,
     getDashboardStats,
     getMediaAssetById,
     listMediaAssets,
     listAssetsForIntegrity,
     listStorageReviewItems,
+    permanentlyDeleteMediaAsset,
+    restoreMediaAsset,
     setAssetIntegrity,
+    trashMediaAsset,
     updateMediaAsset,
     upsertMediaAssetFromObject,
     upsertStorageObject,
@@ -234,4 +238,31 @@ export async function verifyManyMediaAssets() {
     }
 
     return summary;
+}
+
+export async function applyMediaLifecycleAction(
+    action: "archive" | "trash" | "restore" | "permadelete" | "verify",
+    input: { assetId: number }
+) {
+    if (action === "archive") {
+        archiveMediaAsset(input.assetId);
+        return getMediaDetail(input.assetId);
+    }
+
+    if (action === "trash") {
+        trashMediaAsset(input.assetId);
+        return getMediaDetail(input.assetId);
+    }
+
+    if (action === "restore") {
+        restoreMediaAsset(input.assetId);
+        return getMediaDetail(input.assetId);
+    }
+
+    if (action === "permadelete") {
+        permanentlyDeleteMediaAsset(input.assetId);
+        return { ok: true };
+    }
+
+    return verifyMediaAssetIntegrity(input.assetId);
 }
