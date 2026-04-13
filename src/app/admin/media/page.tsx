@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Card, Stack, Text, Title } from "@mantine/core";
 
 import { AssetFilters } from "@/components/admin/AssetFilters";
@@ -5,6 +6,20 @@ import { AssetTable } from "@/components/admin/AssetTable";
 import { MediaUploadForm } from "@/components/admin/MediaUploadForm";
 import { canEdit, requireCmsSession } from "@/lib/authz";
 import { getMediaCatalog } from "@/lib/media/service";
+
+function pickLifecycleStatus(value: string | string[] | undefined) {
+  if (value === "active" || value === "trashed" || value === "all") {
+    return value;
+  }
+  return "active";
+}
+
+function pickIntegrityStatus(value: string | string[] | undefined) {
+  if (value === "ok" || value === "missing" || value === "warning" || value === "invalid" || value === "all") {
+    return value;
+  }
+  return "all";
+}
 
 export default async function AdminMediaPage({
   searchParams,
@@ -18,8 +33,8 @@ export default async function AdminMediaPage({
     mediaType: typeof params.mediaType === "string" ? params.mediaType : "all",
     status: typeof params.status === "string" ? params.status : "all",
     visibility: typeof params.visibility === "string" ? params.visibility : "all",
-    lifecycleStatus: typeof params.lifecycleStatus === "string" ? params.lifecycleStatus : "active",
-    integrityStatus: typeof params.integrityStatus === "string" ? params.integrityStatus : "all",
+    lifecycleStatus: pickLifecycleStatus(params.lifecycleStatus),
+    integrityStatus: pickIntegrityStatus(params.integrityStatus),
   });
 
   return (
@@ -28,6 +43,9 @@ export default async function AdminMediaPage({
         <Title order={1}>Media library</Title>
         <Text c="dimmed">
           Browse, filter, upload, and review canonical media assets. Guests are read-only.
+        </Text>
+        <Text size="sm">
+          <Link href="/admin/media?lifecycleStatus=trashed">Open recycle bin</Link>
         </Text>
       </Stack>
 

@@ -1,6 +1,7 @@
 import { Card, Stack, Table, TableTbody, TableTd, TableTh, TableThead, TableTr, Text, Title } from "@mantine/core";
 
 import { BatchIngestForm } from "@/components/admin/BatchIngestForm";
+import { IntegrityCheckPanel } from "@/components/admin/IntegrityCheckPanel";
 import { LocationImportForm } from "@/components/admin/LocationImportForm";
 import { SpreadsheetImportForm } from "@/components/admin/SpreadsheetImportForm";
 import { SyncRunner } from "@/components/admin/SyncRunner";
@@ -23,6 +24,7 @@ export default async function MediaSyncPage() {
       </Stack>
 
       <SyncRunner editable={canEdit(session.role)} />
+      <IntegrityCheckPanel editable={canEdit(session.role)} />
       <BatchIngestForm editable={canEdit(session.role)} files={spreadsheetFiles} />
       <SpreadsheetImportForm editable={canEdit(session.role)} files={spreadsheetFiles} />
       <LocationImportForm editable={canEdit(session.role)} />

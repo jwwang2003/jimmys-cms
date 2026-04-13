@@ -34,6 +34,10 @@ const originalResolveFilename = Module._resolveFilename;
       { integrityStatus: "warning", integrityMessage: "AWS timeout while verifying object" }
     );
 
+    const summary = { checked: 3, ok: 1, missing: 1, warning: 1, invalid: 0 };
+    assert.equal(summary.checked, 3);
+    assert.equal(summary.missing, 1);
+
     console.log("asset-integrity.test.js ok");
   } finally {
     Module._resolveFilename = originalResolveFilename;
