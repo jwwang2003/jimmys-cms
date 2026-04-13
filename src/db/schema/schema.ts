@@ -93,6 +93,19 @@ export const mediaAssets = sqliteTable(
         })
             .default("private")
             .notNull(),
+        lifecycleStatus: text("lifecycle_status", {
+            enum: ["active", "trashed"],
+        })
+            .default("active")
+            .notNull(),
+        integrityStatus: text("integrity_status", {
+            enum: ["ok", "missing", "warning", "invalid"],
+        })
+            .default("ok")
+            .notNull(),
+        integrityMessage: text("integrity_message"),
+        lastVerifiedAt: integer("last_verified_at", { mode: "timestamp_ms" }),
+        trashedAt: integer("trashed_at", { mode: "timestamp_ms" }),
         publishedAt: integer("published_at", { mode: "timestamp_ms" }),
         createdAt: integer("created_at", { mode: "timestamp_ms" })
             .default(timestamp())
@@ -108,6 +121,8 @@ export const mediaAssets = sqliteTable(
         uniqueIndex("media_assets_slug_unique").on(table.slug),
         index("media_assets_storage_idx").on(table.storageId, table.objectKey),
         index("media_assets_status_idx").on(table.status),
+        index("media_assets_lifecycle_idx").on(table.lifecycleStatus),
+        index("media_assets_integrity_idx").on(table.integrityStatus),
         index("media_assets_published_idx").on(table.publishedAt),
     ]
 );

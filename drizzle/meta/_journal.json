@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1776013267125,
+      "tag": "0000_careless_the_captain",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1776039828918,
+      "tag": "0001_asset_integrity_lifecycle",
+      "breakpoints": true
+    }
+  ]
+}
