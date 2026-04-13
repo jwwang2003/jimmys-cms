@@ -15,6 +15,11 @@
 
 ## Getting Started
 
+Create a local env file first:
+```bash
+cp .env.example .env.local
+```
+
 Set up your local AWS environment:
 ```bash
 aws configure
