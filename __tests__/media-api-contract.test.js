@@ -2,6 +2,8 @@
 require("ts-node/register/transpile-only");
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const { normalizeAssetUpdatePayload } = require("../src/lib/media/forms.ts");
 
@@ -22,6 +24,9 @@ const { normalizeAssetUpdatePayload } = require("../src/lib/media/forms.ts");
   assert.deepEqual(payload.collectionNames, ["Summer Set", "Hero Picks"]);
   assert.equal(payload.locations.length, 1);
   assert.equal(payload.locations[0].isPrimary, true);
+  const filtersSource = fs.readFileSync(path.join(process.cwd(), "src", "components", "admin", "AssetFilters.tsx"), "utf8");
+  assert.equal(filtersSource.includes("lifecycleStatus"), true);
+  assert.equal(filtersSource.includes("integrityStatus"), true);
 
   console.log("media-api-contract.test.js ok");
 })().catch((error) => {

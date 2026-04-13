@@ -22,6 +22,10 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
       <div>
         <Title order={1}>{asset.title}</Title>
         <Text c="dimmed">{asset.object_key}</Text>
+        <Text size="sm" c="dimmed">Integrity: {String(asset.integrity_status)}</Text>
+        <Text size="sm" c="dimmed">
+          Last verified: {asset.last_verified_at ? new Date(asset.last_verified_at).toLocaleString() : "Never"}
+        </Text>
       </div>
       <AssetEditor asset={asset as never} editable={canEdit(session.role)} />
     </Stack>

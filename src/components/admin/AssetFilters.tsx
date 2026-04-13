@@ -11,6 +11,8 @@ export function AssetFilters() {
   const [mediaType, setMediaType] = useState(searchParams.get("mediaType") || "all");
   const [status, setStatus] = useState(searchParams.get("status") || "all");
   const [visibility, setVisibility] = useState(searchParams.get("visibility") || "all");
+  const [lifecycleStatus, setLifecycleStatus] = useState(searchParams.get("lifecycleStatus") || "active");
+  const [integrityStatus, setIntegrityStatus] = useState(searchParams.get("integrityStatus") || "all");
 
   function apply() {
     const params = new URLSearchParams();
@@ -18,6 +20,8 @@ export function AssetFilters() {
     if (mediaType !== "all") params.set("mediaType", mediaType);
     if (status !== "all") params.set("status", status);
     if (visibility !== "all") params.set("visibility", visibility);
+    if (lifecycleStatus !== "active") params.set("lifecycleStatus", lifecycleStatus);
+    if (integrityStatus !== "all") params.set("integrityStatus", integrityStatus);
     router.push(`/admin/media${params.toString() ? `?${params.toString()}` : ""}`);
   }
 
@@ -55,6 +59,28 @@ export function AssetFilters() {
           { value: "private", label: "Private" },
           { value: "internal", label: "Internal" },
           { value: "public", label: "Public" },
+        ]}
+      />
+      <Select
+        label="Lifecycle"
+        value={lifecycleStatus}
+        onChange={(value) => setLifecycleStatus(value || "active")}
+        data={[
+          { value: "active", label: "Active" },
+          { value: "trashed", label: "Trashed" },
+          { value: "all", label: "All lifecycle" },
+        ]}
+      />
+      <Select
+        label="Integrity"
+        value={integrityStatus}
+        onChange={(value) => setIntegrityStatus(value || "all")}
+        data={[
+          { value: "all", label: "All integrity" },
+          { value: "ok", label: "OK" },
+          { value: "missing", label: "Missing" },
+          { value: "warning", label: "Warning" },
+          { value: "invalid", label: "Invalid" },
         ]}
       />
       <Button onClick={apply}>Apply</Button>

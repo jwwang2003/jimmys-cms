@@ -191,6 +191,8 @@ export function getMediaCatalog(filters?: {
     mediaType?: string;
     status?: string;
     visibility?: string;
+    lifecycleStatus?: "active" | "trashed" | "all";
+    integrityStatus?: "ok" | "missing" | "warning" | "invalid" | "all";
 }) {
     return listMediaAssets(filters);
 }

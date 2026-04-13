@@ -18,6 +18,8 @@ export default async function AdminMediaPage({
     mediaType: typeof params.mediaType === "string" ? params.mediaType : "all",
     status: typeof params.status === "string" ? params.status : "all",
     visibility: typeof params.visibility === "string" ? params.visibility : "all",
+    lifecycleStatus: typeof params.lifecycleStatus === "string" ? params.lifecycleStatus : "active",
+    integrityStatus: typeof params.integrityStatus === "string" ? params.integrityStatus : "all",
   });
 
   return (
@@ -34,7 +36,7 @@ export default async function AdminMediaPage({
       <Card withBorder radius="lg" p="lg">
         <Stack gap="lg">
           <AssetFilters />
-          <AssetTable assets={assets as never[]} />
+          <AssetTable assets={assets as never[]} editable={canEdit(session.role)} />
         </Stack>
       </Card>
     </Stack>
