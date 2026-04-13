@@ -48,3 +48,7 @@ next-env.d.ts
 
 # local reference project
 simple-cms/
+data/demo
+
+# local planning/spec artifacts
+docs/superpowers/
