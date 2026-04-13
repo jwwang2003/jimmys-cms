@@ -1,6 +1,6 @@
-ALTER TABLE `media_assets` ADD `lifecycle_status` text NOT NULL DEFAULT 'active' CHECK ("lifecycle_status" IN ('active', 'trashed'));
+ALTER TABLE `media_assets` ADD `lifecycle_status` text CONSTRAINT `media_assets_lifecycle_status_check` CHECK ("lifecycle_status" IN ('active', 'trashed')) NOT NULL DEFAULT 'active';
 --> statement-breakpoint
-ALTER TABLE `media_assets` ADD `integrity_status` text NOT NULL DEFAULT 'ok' CHECK ("integrity_status" IN ('ok', 'missing', 'warning', 'invalid'));
+ALTER TABLE `media_assets` ADD `integrity_status` text CONSTRAINT `media_assets_integrity_status_check` CHECK ("integrity_status" IN ('ok', 'missing', 'warning', 'invalid')) NOT NULL DEFAULT 'ok';
 --> statement-breakpoint
 ALTER TABLE `media_assets` ADD `integrity_message` text;
 --> statement-breakpoint

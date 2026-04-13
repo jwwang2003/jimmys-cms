@@ -63,7 +63,7 @@ const Database = require("better-sqlite3");
           Date.now(),
         );
       },
-      /CHECK constraint failed/
+      /CHECK constraint failed: media_assets_lifecycle_status_check/
     );
 
     console.log("asset-lifecycle.test.js ok");
