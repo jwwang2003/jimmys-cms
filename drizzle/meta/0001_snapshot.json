@@ -160,7 +160,16 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "media_assets_lifecycle_status_check": {
+          "name": "media_assets_lifecycle_status_check",
+          "value": "\"lifecycle_status\" in ('active', 'trashed')"
+        },
+        "media_assets_integrity_status_check": {
+          "name": "media_assets_integrity_status_check",
+          "value": "\"integrity_status\" in ('ok', 'missing', 'warning', 'invalid')"
+        }
+      }
     },
     "collection_assets": {
       "name": "collection_assets",

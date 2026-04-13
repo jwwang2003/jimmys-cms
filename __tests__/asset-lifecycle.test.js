@@ -25,24 +25,46 @@ const Database = require("better-sqlite3");
       values ('default', 's3.glorialan.com', 'us-east-2', null, ?, ?)
     `).run(Date.now(), Date.now());
 
-    db.prepare(`
+    const insertResult = db.prepare(`
       insert into media_assets (
         title, slug, media_type, storage_id, object_key, object_url, mime_type, size_bytes,
-        status, visibility, lifecycle_status, integrity_status, created_at, updated_at
+        status, visibility, created_at, updated_at
       )
-      values (?, ?, 'image', 'default', ?, ?, 'image/jpeg', 12, 'draft', 'private', 'active', 'ok', ?, ?)
+      values (?, ?, 'image', 'default', ?, ?, 'image/jpeg', 12, 'draft', 'private', ?, ?)
     `).run("Harbor", "harbor", "content/harbor.jpg", "https://example/harbor.jpg", Date.now(), Date.now());
 
     const row = db.prepare(`
       select lifecycle_status, integrity_status, trashed_at, last_verified_at
       from media_assets
-      where id = 1
-    `).get();
+      where id = ?
+    `).get(insertResult.lastInsertRowid);
 
     assert.equal(row.lifecycle_status, "active");
     assert.equal(row.integrity_status, "ok");
     assert.equal(row.trashed_at, null);
     assert.equal(row.last_verified_at, null);
+
+    assert.throws(
+      () => {
+        db.prepare(`
+          insert into media_assets (
+            title, slug, media_type, storage_id, object_key, object_url, mime_type, size_bytes,
+            status, visibility, lifecycle_status, integrity_status, created_at, updated_at
+          )
+          values (?, ?, 'image', 'default', ?, ?, 'image/jpeg', 12, 'draft', 'private', ?, ?, ?, ?)
+        `).run(
+          "Harbor Invalid",
+          "harbor-invalid",
+          "content/harbor-invalid.jpg",
+          "https://example/harbor-invalid.jpg",
+          "nope",
+          "bad",
+          Date.now(),
+          Date.now(),
+        );
+      },
+      /CHECK constraint failed/
+    );
 
     console.log("asset-lifecycle.test.js ok");
   } finally {

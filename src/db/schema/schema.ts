@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+    check,
     index,
     integer,
     primaryKey,
@@ -124,6 +125,14 @@ export const mediaAssets = sqliteTable(
         index("media_assets_lifecycle_idx").on(table.lifecycleStatus),
         index("media_assets_integrity_idx").on(table.integrityStatus),
         index("media_assets_published_idx").on(table.publishedAt),
+        check(
+            "media_assets_lifecycle_status_check",
+            sql`${table.lifecycleStatus} in ('active', 'trashed')`
+        ),
+        check(
+            "media_assets_integrity_status_check",
+            sql`${table.integrityStatus} in ('ok', 'missing', 'warning', 'invalid')`
+        ),
     ]
 );
 
