@@ -1,5 +1,7 @@
 export type MediaOutcome = "valid" | "warning" | "invalid";
 export type ManagedMediaType = "image" | "video" | "other";
+export type AssetLifecycleStatus = "active" | "trashed";
+export type AssetIntegrityStatus = "ok" | "missing" | "warning" | "invalid";
 
 export type ClassifiedStorageObject = {
     outcome: MediaOutcome;

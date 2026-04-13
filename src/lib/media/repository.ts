@@ -1,5 +1,11 @@
 import { sqlite } from "@/db";
-import type { AssetLocationInput, AssetUpdateInput, ManagedMediaType } from "./types";
+import type {
+    AssetIntegrityStatus,
+    AssetLifecycleStatus,
+    AssetLocationInput,
+    AssetUpdateInput,
+    ManagedMediaType,
+} from "./types";
 import { slugFromText } from "./normalization";
 
 type RawAssetRecord = {
@@ -15,6 +21,11 @@ type RawAssetRecord = {
     size_bytes: number;
     status: "draft" | "review" | "published" | "archived";
     visibility: "private" | "internal" | "public";
+    lifecycle_status: AssetLifecycleStatus;
+    integrity_status: AssetIntegrityStatus;
+    integrity_message: string | null;
+    last_verified_at: number | null;
+    trashed_at: number | null;
     warnings_json: string | null;
     metadata_json: string | null;
     created_at: number;
@@ -69,6 +80,8 @@ export function listMediaAssets(filters?: {
     mediaType?: string;
     status?: string;
     visibility?: string;
+    lifecycleStatus?: AssetLifecycleStatus | "all";
+    integrityStatus?: AssetIntegrityStatus | "all";
 }) {
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -89,6 +102,16 @@ export function listMediaAssets(filters?: {
     if (filters?.visibility && filters.visibility !== "all") {
         conditions.push("ma.visibility = ?");
         params.push(filters.visibility);
+    }
+    if (!filters?.lifecycleStatus || filters.lifecycleStatus === "active") {
+        conditions.push("ma.lifecycle_status = 'active'");
+    } else if (filters.lifecycleStatus !== "all") {
+        conditions.push("ma.lifecycle_status = ?");
+        params.push(filters.lifecycleStatus);
+    }
+    if (filters?.integrityStatus && filters.integrityStatus !== "all") {
+        conditions.push("ma.integrity_status = ?");
+        params.push(filters.integrityStatus);
     }
 
     const where = conditions.length > 0 ? `where ${conditions.join(" and ")}` : "";
@@ -185,6 +208,46 @@ export function getMediaAssetById(id: number) {
         collections,
         locations,
     };
+}
+
+export function archiveMediaAsset(assetId: number) {
+    sqlite
+        .prepare(`
+            update media_assets
+            set status = 'archived',
+                updated_at = ?
+            where id = ?
+        `)
+        .run(now(), assetId);
+}
+
+export function trashMediaAsset(assetId: number) {
+    const timestamp = now();
+    sqlite
+        .prepare(`
+            update media_assets
+            set lifecycle_status = 'trashed',
+                trashed_at = ?,
+                updated_at = ?
+            where id = ?
+        `)
+        .run(timestamp, timestamp, assetId);
+}
+
+export function restoreMediaAsset(assetId: number) {
+    sqlite
+        .prepare(`
+            update media_assets
+            set lifecycle_status = 'active',
+                trashed_at = null,
+                updated_at = ?
+            where id = ?
+        `)
+        .run(now(), assetId);
+}
+
+export function permanentlyDeleteMediaAsset(assetId: number) {
+    sqlite.prepare("delete from media_assets where id = ?").run(assetId);
 }
 
 export function findMediaAssetByReference(input: { assetId?: number | null; objectKey?: string | null }) {
