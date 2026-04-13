@@ -46,6 +46,12 @@ export type AssetMatch = {
     media_type: "image" | "video" | "audio" | "document" | "other";
 };
 
+export type IntegrityAssetRecord = {
+    id: number;
+    storage_id: string;
+    object_key: string;
+};
+
 function parseJsonArray(value: string | null | undefined) {
     if (!value) return [];
     try {
@@ -248,6 +254,34 @@ export function restoreMediaAsset(assetId: number) {
 
 export function permanentlyDeleteMediaAsset(assetId: number) {
     sqlite.prepare("delete from media_assets where id = ?").run(assetId);
+}
+
+export function setAssetIntegrity(assetId: number, input: {
+    integrityStatus: AssetIntegrityStatus;
+    integrityMessage: string | null;
+}) {
+    const timestamp = now();
+    sqlite
+        .prepare(`
+            update media_assets
+            set integrity_status = ?,
+                integrity_message = ?,
+                last_verified_at = ?,
+                updated_at = ?
+            where id = ?
+        `)
+        .run(input.integrityStatus, input.integrityMessage, timestamp, timestamp, assetId);
+}
+
+export function listAssetsForIntegrity(filters?: { lifecycleStatus?: AssetLifecycleStatus }) {
+    return sqlite
+        .prepare(`
+            select id, storage_id, object_key
+            from media_assets
+            where lifecycle_status = ?
+            order by id asc
+        `)
+        .all(filters?.lifecycleStatus || "active") as IntegrityAssetRecord[];
 }
 
 export function findMediaAssetByReference(input: { assetId?: number | null; objectKey?: string | null }) {

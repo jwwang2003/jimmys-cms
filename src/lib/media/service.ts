@@ -1,12 +1,15 @@
 import { ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
 
 import { buildKey, getS3 } from "@/lib/s3";
+import { verifyS3ObjectIntegrity } from "./integrity";
 import { classifyStorageObject } from "./normalization";
 import {
     getDashboardStats,
     getMediaAssetById,
     listMediaAssets,
+    listAssetsForIntegrity,
     listStorageReviewItems,
+    setAssetIntegrity,
     updateMediaAsset,
     upsertMediaAssetFromObject,
     upsertStorageObject,
@@ -194,4 +197,41 @@ export function getMediaDetail(id: number) {
 
 export function applyMediaUpdate(id: number, input: AssetUpdateInput) {
     return updateMediaAsset(id, input);
+}
+
+export async function verifyMediaAssetIntegrity(assetId: number) {
+    const asset = getMediaDetail(assetId);
+    if (!asset) {
+        throw new Error("Asset not found");
+    }
+
+    const result = await verifyS3ObjectIntegrity({
+        storageId: asset.storage_id,
+        objectKey: asset.object_key,
+    });
+    setAssetIntegrity(assetId, result);
+    return getMediaDetail(assetId);
+}
+
+export async function verifyManyMediaAssets() {
+    const assets = listAssetsForIntegrity({ lifecycleStatus: "active" });
+    const summary = {
+        checked: 0,
+        ok: 0,
+        missing: 0,
+        warning: 0,
+        invalid: 0,
+    };
+
+    for (const asset of assets) {
+        const result = await verifyS3ObjectIntegrity({
+            storageId: asset.storage_id,
+            objectKey: asset.object_key,
+        });
+        setAssetIntegrity(asset.id, result);
+        summary.checked += 1;
+        summary[result.integrityStatus] += 1;
+    }
+
+    return summary;
 }
