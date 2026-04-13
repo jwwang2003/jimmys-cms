@@ -95,7 +95,11 @@ const config = {
 
   // An array of regexp pattern strings, matched against all module paths before considered 'visible' to the module loader
   // modulePathIgnorePatterns: [],
-  modulePathIgnorePatterns: ["<rootDir>/.next/", "<rootDir>/simple-cms/"],
+  modulePathIgnorePatterns: [
+    "<rootDir>/.next/",
+    "<rootDir>/.worktrees/",
+    "<rootDir>/simple-cms/",
+  ],
 
   // Activates notifications for test results
   // notify: false,
@@ -156,15 +160,16 @@ const config = {
   // Adds a location field to test results
   // testLocationInResults: false,
 
-  // The glob patterns Jest uses to detect test files
-  // testMatch: [
-  //   "**/__tests__/**/*.?([mc])[jt]s?(x)",
-  //   "**/?(*.)+(spec|test).?([mc])[jt]s?(x)"
-  // ],
+  // Only the true Jest suite should run here. The Node-based regression scripts in
+  // __tests__/*.test.js are executed separately by `pnpm run test:cms`.
+  testMatch: [
+    "<rootDir>/__tests__/s3.test.js",
+  ],
 
   // An array of regexp pattern strings that are matched against all test paths, matched tests are skipped
   testPathIgnorePatterns: [
     "/node_modules/",
+    "<rootDir>/.worktrees/",
     "<rootDir>/simple-cms/",
     "<rootDir>/__tests__/session.test.js",
     "<rootDir>/__tests__/cms-bootstrap.test.js",
