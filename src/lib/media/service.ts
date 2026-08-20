@@ -74,7 +74,7 @@ function normalizeExtension(fileName: string) {
     return ext || ".bin";
 }
 
-function determineManagedMediaType(fileName: string, mimeType?: string | null) {
+export function determineManagedMediaType(fileName: string, mimeType?: string | null) {
     if (mimeType) {
         if (mimeType.startsWith("image/")) return "image" as const;
         if (mimeType.startsWith("video/")) return "video" as const;
@@ -89,7 +89,7 @@ function determineManagedMediaType(fileName: string, mimeType?: string | null) {
     return "other" as const;
 }
 
-function buildManagedObjectKey(
+export function buildManagedObjectKey(
     mediaType: "image" | "video" | "other",
     fileName: string,
     prefix: "content" | "media" | "public" | "meta",

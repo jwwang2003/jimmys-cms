@@ -20,7 +20,10 @@ export async function verifyS3OnStartup() {
     // Determine set of buckets to check; include default if present
     const entries = Object.entries(buckets);
     if (entries.length === 0 && defaultBucket) {
-        entries.push(["default", { name: defaultBucket, region: defaultRegion || "" }]);
+        entries.push([
+            "default",
+            { name: defaultBucket, region: defaultRegion || "", endpoint: "", forcePathStyle: false, cdnBaseUrl: "" },
+        ]);
     }
 
     if (entries.length === 0) {

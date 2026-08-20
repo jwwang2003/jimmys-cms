@@ -15,10 +15,14 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "storage:sync": "node scripts/sync-storage.js",
+    "spreadsheet:import": "node scripts/import-spreadsheet.js",
+    "derive": "node scripts/derive.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.888.0",
+    "@aws-sdk/client-s3": "^3.1114.0",
+    "@aws-sdk/s3-request-presigner": "^3.1114.0",
     "@emotion/cache": "^11.14.0",
     "@emotion/react": "^11.14.0",
     "@mantine/carousel": "^8.3.0",
@@ -49,6 +53,7 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "recharts": "^3.2.0",
+    "sharp": "^0.35.3",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

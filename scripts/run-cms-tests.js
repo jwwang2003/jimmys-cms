@@ -15,6 +15,7 @@ const tests = [
   "__tests__/spreadsheet-upload-contract.test.js",
   "__tests__/upload-storage.test.js",
   "__tests__/photo-exif.test.js",
+  "__tests__/derive.test.js",
   "__tests__/asset-lifecycle.test.js",
   "__tests__/asset-integrity.test.js",
   "__tests__/admin-layout.test.js",
