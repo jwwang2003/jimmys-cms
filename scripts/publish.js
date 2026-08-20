@@ -5,7 +5,14 @@
  *   node scripts/publish.js --dry-run              # build + diff, write nothing
  *   node scripts/publish.js                        # publish changed artifacts
  *   node scripts/publish.js --include-drafts       # include unpublished assets
- *   node scripts/publish.js --revalidate           # notify the site afterwards
+ *   node scripts/publish.js --revalidate           # notify even when nothing was written
+ *   node scripts/publish.js --no-revalidate        # never notify
+ *
+ * A publish that wrote objects notifies the site's /api/revalidate by itself
+ * when REVALIDATE_ENDPOINT and REVALIDATE_SECRET are set — otherwise the site
+ * serves the old manifest until its hourly backstop. A run that wrote nothing
+ * skips the call (the site's cache is already correct); --revalidate forces it
+ * anyway, for when a previous notification was missed.
  *
  * Publishing is a diff, not a rewrite: artifact hashes are recomputed, compared
  * against the build_state ledger, and only mismatches are written. A second run
@@ -24,7 +31,8 @@ const flag = (name) => process.argv.includes(`--${name}`);
 const dryRun = flag("dry-run");
 const includeDrafts = flag("include-drafts");
 const force = flag("force");
-const doRevalidate = flag("revalidate");
+const forceRevalidate = flag("revalidate");
+const skipRevalidate = flag("no-revalidate");
 const outPath = arg("out");
 
 (async () => {
@@ -84,15 +92,19 @@ const outPath = arg("out");
         console.log(`catalog -> ${outPath}`);
     }
 
-    if (doRevalidate && !dryRun) {
+    if (!dryRun && !skipRevalidate && (summary.objectsWritten > 0 || forceRevalidate)) {
         const endpoint = process.env.REVALIDATE_ENDPOINT;
         const secret = process.env.REVALIDATE_SECRET;
         if (!endpoint || !secret) {
-            console.log("\nrevalidate skipped: REVALIDATE_ENDPOINT / REVALIDATE_SECRET not set");
+            // Loud, not fatal: the artifacts are already live, but the site
+            // will keep serving the old manifest until its hourly backstop.
+            console.warn("\nrevalidate SKIPPED: REVALIDATE_ENDPOINT / REVALIDATE_SECRET not set — site stays stale up to 1h");
         } else {
             const result = await notifyRevalidate({ endpoint, secret, ids: assets.map((a) => a.uid) });
-            console.log(`\nrevalidate: ${result.ok ? "ok" : `failed — ${result.error || result.status}`}`);
+            console.log(`\nrevalidate: ${result.ok ? "ok" : `FAILED — ${result.error || result.status} (site refreshes on its hourly backstop)`}`);
         }
+    } else if (!dryRun && !skipRevalidate) {
+        console.log("\nrevalidate: skipped (no objects written; --revalidate to force)");
     }
 })().catch((error) => {
     console.error("publish failed:", error);
