@@ -21,7 +21,7 @@ Module._resolveFilename = function (request, parent, isMain, options) {
     return originalResolve.call(this, request, parent, isMain, options);
 };
 
-const { buildCatalog, CATALOG_FIELDS } = require("../src/lib/publish/catalog.ts");
+const { buildCatalog, CATALOG_FIELDS, ARTWORK_FIELDS } = require("../src/lib/publish/catalog.ts");
 const { assetContentHash, artifactHash, shortHash } = require("../src/lib/publish/content-hash.ts");
 const { countryCodeFromName, geographyFromGeocodeResponse } = require("../src/lib/publish/geography.ts");
 
@@ -40,6 +40,7 @@ function asset(overrides) {
         height: 3333,
         lqip: "data:image/webp;base64,AAAA",
         tags: ["river", "street photography"],
+        kind: "photography",
         renditions: [
             { label: "avif-800", objectKey: "derived/photo/a-photo/800.avif" },
             { label: "webp-800", objectKey: "derived/photo/a-photo/800.webp" },
@@ -239,7 +240,54 @@ function withHash(a) {
         assert.deepEqual(geographyFromGeocodeResponse("not json"), { countryCode: null, regionCode: null });
     }
 
-    console.log("publish-catalog.test.js ok");
+    // --- the two media produce different shapes --------------------------
+  {
+    const photo = withHash(asset({ uid: 'p1', kind: 'photography' }));
+    const art = withHash(asset({
+      uid: 'a1', kind: 'artwork', countryCode: null, regionCode: null, camera: null,
+      year: '2021', series: ['watercolors'], rotate: 90, tags: ['ink'],
+    }));
+
+    const photos = buildCatalog([photo], 'photography');
+    const arts = buildCatalog([art], 'artwork');
+
+    assert.equal(photos.kind, 'photography');
+    assert.deepEqual(photos.fields, CATALOG_FIELDS);
+    assert.equal(arts.kind, 'artwork');
+    assert.deepEqual(arts.fields, ARTWORK_FIELDS);
+
+    // A painting has no country, region or camera; carrying those columns for
+    // it would be dead weight in every artwork payload.
+    assert.ok(!arts.fields.includes('country'));
+    assert.ok(!arts.fields.includes('camera'));
+    // A photograph has no series.
+    assert.ok(!photos.fields.includes('series'));
+
+    const seriesIdx = ARTWORK_FIELDS.indexOf('series');
+    const rotateIdx = ARTWORK_FIELDS.indexOf('rotate');
+    assert.deepEqual(arts.rows[0][seriesIdx], [0]);
+    assert.equal(arts.dict.series[0], 'watercolors');
+    assert.equal(arts.rows[0][rotateIdx], 90);
+    assert.deepEqual(arts.postings.series.watercolors, [0]);
+    // Artwork facets on year, which is the precision the site shows.
+    assert.deepEqual(arts.postings.year['2021'], [0]);
+  }
+
+  // --- kind and artwork fields are part of the hash --------------------
+  {
+    const base = asset({ kind: 'artwork', year: '2021', series: ['watercolors'], rotate: null });
+    assert.notEqual(assetContentHash(base), assetContentHash({ ...base, kind: 'photography' }));
+    assert.notEqual(assetContentHash(base), assetContentHash({ ...base, year: '2022' }));
+    assert.notEqual(assetContentHash(base), assetContentHash({ ...base, series: ['churches-and-cathedrals'] }));
+    assert.notEqual(assetContentHash(base), assetContentHash({ ...base, rotate: 90 }));
+    // Series order is presentation, not identity.
+    assert.equal(
+      assetContentHash({ ...base, series: ['a', 'b'] }),
+      assetContentHash({ ...base, series: ['b', 'a'] })
+    );
+  }
+
+  console.log("publish-catalog.test.js ok");
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { buildState } from "@/db/schema/schema";
 import { getS3 } from "@/lib/s3";
-import { buildCatalog, buildManifest, type CatalogAsset } from "./catalog";
+import { buildCatalog, buildManifest, type CatalogAsset, type SeriesEntry } from "./catalog";
 import { artifactHash, shortHash, GENERATOR_VERSION } from "./content-hash";
 
 export const MANIFEST_KEY = "data/manifest.json";
@@ -83,6 +83,7 @@ function artifactUrl(storageId: string, key: string) {
  */
 export async function publish(input: {
     assets: CatalogAsset[];
+    series?: SeriesEntry[];
     storageId?: string;
     dryRun?: boolean;
     force?: boolean;
@@ -109,57 +110,77 @@ export async function publish(input: {
         objectsWritten += 1;
     };
 
-    // --- catalog -----------------------------------------------------------
-    const catalog = buildCatalog(input.assets);
-    const catalogHash = artifactHash(input.assets.map((asset) => asset.contentHash));
-    const catalogKey = `data/photos.${shortHash(catalogHash)}.json`;
-    const catalogBody = JSON.stringify(catalog);
+    // --- one catalog per medium --------------------------------------------
+    // Photography and artwork are separate pages with different shapes, so each
+    // gets its own artifact and its own hash. A change to one must not force a
+    // re-download of the other.
+    const catalogKeys: Record<string, string> = {};
+    const counts: Record<string, number> = {};
+    const catalogHashes: string[] = [];
 
-    const catalogLedger = readLedger("catalog");
-    const catalogChanged = !catalogLedger
-        ? "new"
-        : catalogLedger.artifactHash !== catalogHash
-            ? "hash-changed"
-            : input.force
-                ? "forced"
-                : "unchanged";
+    for (const kind of ["photography", "artwork"] as const) {
+        const subset = input.assets.filter((asset) => asset.kind === kind);
+        const catalog = buildCatalog(subset, kind);
+        const hash = artifactHash(subset.map((asset) => asset.contentHash), `${GENERATOR_VERSION}:${kind}`);
+        const key = `data/${kind === "artwork" ? "artworks" : "photos"}.${shortHash(hash)}.json`;
+        const body = JSON.stringify(catalog);
 
-    if (catalogChanged !== "unchanged") {
-        // Content-hashed key, so the object is immutable and safe to cache for
-        // a year: a different catalog is a different key.
-        await put(catalogKey, catalogBody, "public, max-age=31536000, immutable");
-        if (!input.dryRun) {
-            writeLedger({
-                artifact: "catalog",
-                artifactHash: catalogHash,
-                objectKey: catalogKey,
-                objectUrl: artifactUrl(storageId, catalogKey),
-                sizeBytes: Buffer.byteLength(catalogBody),
-                itemCount: catalog.count,
-            });
+        catalogKeys[kind] = key;
+        counts[kind] = catalog.count;
+        catalogHashes.push(hash);
+
+        const artifactName = `catalog:${kind}`;
+        const ledger = readLedger(artifactName);
+        const changed = !ledger
+            ? "new"
+            : ledger.artifactHash !== hash
+                ? "hash-changed"
+                : input.force
+                    ? "forced"
+                    : "unchanged";
+
+        if (changed !== "unchanged") {
+            // Content-hashed key, so the object is immutable and safe to cache
+            // for a year: a different catalog is a different key.
+            await put(key, body, "public, max-age=31536000, immutable");
+            if (!input.dryRun) {
+                writeLedger({
+                    artifact: artifactName,
+                    artifactHash: hash,
+                    objectKey: key,
+                    objectUrl: artifactUrl(storageId, key),
+                    sizeBytes: Buffer.byteLength(body),
+                    itemCount: catalog.count,
+                });
+            }
         }
+
+        artifacts.push({
+            artifact: artifactName,
+            objectKey: key,
+            hash,
+            sizeBytes: Buffer.byteLength(body),
+            written: changed !== "unchanged",
+            reason: changed,
+        });
     }
 
-    artifacts.push({
-        artifact: "catalog",
-        objectKey: catalogKey,
-        hash: catalogHash,
-        sizeBytes: Buffer.byteLength(catalogBody),
-        written: catalogChanged !== "unchanged",
-        reason: catalogChanged,
-    });
-
     // --- manifest ----------------------------------------------------------
-    // The manifest points at the catalog, so its hash is derived from the
-    // catalog's rather than from its own bytes: it carries a timestamp, and
-    // hashing that would make it differ on every run.
+    // The manifest points at the catalogs, so its hash derives from theirs
+    // rather than from its own bytes: it carries a timestamp, and hashing that
+    // would make it differ on every run. Series are hashed in too, since the
+    // manifest is where they are published.
     const manifest = buildManifest({
-        catalogKey,
-        count: catalog.count,
+        catalogKeys,
+        counts,
+        series: input.series ?? [],
         generatorVersion: GENERATOR_VERSION,
         generatedAt,
     });
-    const manifestHash = artifactHash([catalogHash], `${GENERATOR_VERSION}:manifest`);
+    const manifestHash = artifactHash(
+        [...catalogHashes, JSON.stringify(input.series ?? [])],
+        `${GENERATOR_VERSION}:manifest`
+    );
     const manifestLedger = readLedger("manifest");
     const manifestChanged = !manifestLedger
         ? "new"
@@ -179,7 +200,7 @@ export async function publish(input: {
                 objectKey: MANIFEST_KEY,
                 objectUrl: artifactUrl(storageId, MANIFEST_KEY),
                 sizeBytes: Buffer.byteLength(JSON.stringify(manifest)),
-                itemCount: catalog.count,
+                itemCount: Object.values(counts).reduce((a, b) => a + b, 0),
             });
         }
     }

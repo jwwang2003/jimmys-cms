@@ -3,6 +3,8 @@ import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import {
     assetLocations,
+    collectionAssets,
+    collections,
     mediaAssets,
     mediaRenditions,
     mediaTags,
@@ -10,7 +12,7 @@ import {
 } from "@/db/schema/schema";
 import { assetContentHash } from "./content-hash";
 import { countryCodeFromName, geographyFromGeocodeResponse } from "./geography";
-import type { CatalogAsset } from "./catalog";
+import type { CatalogAsset, SeriesEntry } from "./catalog";
 
 function parseJsonObject(value: string | null | undefined): Record<string, unknown> {
     if (!value) return {};
@@ -65,6 +67,7 @@ export function collectPublishableAssets(options?: { includeDrafts?: boolean }):
             regionCode: mediaAssets.regionCode,
             metadataJson: mediaAssets.metadataJson,
             status: mediaAssets.status,
+            kind: mediaAssets.kind,
         })
         .from(mediaAssets)
         .where(
@@ -80,6 +83,9 @@ export function collectPublishableAssets(options?: { includeDrafts?: boolean }):
 
     for (const row of rows) {
         if (!options?.includeDrafts && row.status !== "published") continue;
+        // Support assets are site chrome. They are catalogued so storage stays
+        // reconciled, but they are not works and never reach a reader.
+        if (row.kind === "support") continue;
 
         const metadata = parseJsonObject(row.metadataJson);
         const spreadsheet = parseJsonObject(
@@ -123,6 +129,21 @@ export function collectPublishableAssets(options?: { includeDrafts?: boolean }):
         // is what keeps this safe to embed in permanent URLs.
         const uid = row.slug;
 
+        const artwork = parseJsonObject(
+            typeof metadata.artwork === "object" && metadata.artwork
+                ? JSON.stringify(metadata.artwork)
+                : null
+        );
+
+        const series = db
+            .select({ slug: collections.slug })
+            .from(collectionAssets)
+            .innerJoin(collections, eq(collections.id, collectionAssets.collectionId))
+            .where(eq(collectionAssets.assetId, row.id))
+            .orderBy(asc(collectionAssets.position))
+            .all()
+            .map((entry) => entry.slug);
+
         const asset = {
             uid,
             slug: row.slug,
@@ -138,6 +159,12 @@ export function collectPublishableAssets(options?: { includeDrafts?: boolean }):
             lqip: typeof metadata.lqip === "string" ? metadata.lqip : null,
             tags: assetTags,
             renditions,
+            // Part of the hash: all three are published, so a change to any of
+            // them must invalidate the artifact.
+            kind: row.kind as CatalogAsset["kind"],
+            year: typeof artwork.year === "string" ? artwork.year : null,
+            series,
+            rotate: typeof artwork.rotate === "number" ? artwork.rotate : null,
         };
 
         assets.push({ ...asset, contentHash: assetContentHash(asset) });
@@ -215,4 +242,40 @@ export function materializeGeography(): { updated: number; withRegion: number; w
     });
 
     return { updated, withRegion, withCountry };
+}
+
+/**
+ * Series definitions for the manifest.
+ *
+ * Carried in the manifest rather than the artwork catalog: the art landing page
+ * needs them before it has any artwork rows, and putting them behind the
+ * catalog fetch would serialise two round trips for content that is a few
+ * hundred bytes.
+ */
+export function collectSeries(): SeriesEntry[] {
+    const rows = db
+        .select({
+            id: collections.id,
+            slug: collections.slug,
+            title: collections.title,
+            description: collections.description,
+        })
+        .from(collections)
+        .where(eq(collections.kind, "series"))
+        .orderBy(asc(collections.slug))
+        .all();
+
+    return rows.map((row) => ({
+        slug: row.slug,
+        title: row.title,
+        description: row.description ?? "",
+        artworks: db
+            .select({ slug: mediaAssets.slug })
+            .from(collectionAssets)
+            .innerJoin(mediaAssets, eq(mediaAssets.id, collectionAssets.assetId))
+            .where(eq(collectionAssets.collectionId, row.id))
+            .orderBy(asc(collectionAssets.position))
+            .all()
+            .map((entry) => entry.slug),
+    }));
 }

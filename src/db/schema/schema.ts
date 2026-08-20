@@ -357,7 +357,9 @@ export const collections = sqliteTable(
         id: integer("id").primaryKey({ autoIncrement: true }),
         title: text("title").notNull(),
         slug: text("slug").notNull(),
-        kind: text("kind", { enum: ["album", "collection"] })
+        // `series` is a curated, ordered run of artworks that the site routes
+        // to by slug — distinct from an album or an ad-hoc collection.
+        kind: text("kind", { enum: ["album", "collection", "series"] })
             .default("collection")
             .notNull(),
         description: text("description"),

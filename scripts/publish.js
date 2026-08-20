@@ -33,7 +33,7 @@ const outPath = arg("out");
     const { GENERATOR_VERSION } = require("../src/lib/publish/content-hash.ts");
     const { buildCatalog } = require("../src/lib/publish/catalog.ts");
 
-    const { materializeGeography } = require("../src/lib/publish/collect.ts");
+    const { materializeGeography, collectSeries } = require("../src/lib/publish/collect.ts");
     if (!dryRun) {
         const geo = materializeGeography();
         console.log(`geography : ${geo.withCountry} country, ${geo.withRegion} region materialized
@@ -59,7 +59,15 @@ const outPath = arg("out");
 
     if (!dryRun) storeContentHashes(assets);
 
-    const summary = await publish({ assets, dryRun, force });
+    const series = collectSeries();
+    const byKind = assets.reduce((acc, a) => {
+        acc[a.kind] = (acc[a.kind] || 0) + 1;
+        return acc;
+    }, {});
+    console.log(`  by kind         : ${Object.entries(byKind).map(([k, v]) => `${k}=${v}`).join(" ")}`);
+    console.log(`  series          : ${series.length}\n`);
+
+    const summary = await publish({ assets, series, dryRun, force });
 
     for (const artifact of summary.artifacts) {
         const size = (artifact.sizeBytes / 1024).toFixed(1);

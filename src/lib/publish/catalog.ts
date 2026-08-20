@@ -9,10 +9,18 @@ import type { HashableAsset } from "./content-hash";
  * precomputed, and the facet postings are shipped rather than rebuilt on the
  * client — the generator has already read every row, so making the browser
  * redo that work is pure waste.
+ *
+ * Photography and artwork are published as separate artifacts because they are
+ * separate pages with genuinely different shapes. A painting has no country,
+ * region or camera; a photograph has no series. Merging them would ship every
+ * `/art` visitor a region posting index they never read, and force both halves
+ * to carry the other's empty columns.
  */
 
+export type AssetKind = "photography" | "artwork" | "support";
+
 /** Column order is part of the wire contract; readers index by position. */
-export const CATALOG_FIELDS = [
+export const PHOTO_FIELDS = [
     "uid",
     "slug",
     "takenAt",
@@ -28,24 +36,40 @@ export const CATALOG_FIELDS = [
     "tags",
 ] as const;
 
-/** Columns interned into a dictionary and stored as integer indices. */
-type DictColumn = "country" | "region" | "city" | "place" | "camera" | "tags";
+export const ARTWORK_FIELDS = [
+    "uid",
+    "slug",
+    "takenAt",
+    "year",
+    "title",
+    "w",
+    "h",
+    "lqip",
+    "tags",
+    "series",
+    "rotate",
+] as const;
 
-export type CatalogAsset = HashableAsset & { contentHash: string };
+/** Back-compat alias: the photography set was the original single catalog. */
+export const CATALOG_FIELDS = PHOTO_FIELDS;
+
+export type CatalogAsset = HashableAsset & {
+    contentHash: string;
+    kind: AssetKind;
+    /** Artwork only. */
+    year?: string | null;
+    series?: string[];
+    rotate?: number | null;
+};
 
 export type Catalog = {
     v: number;
+    kind: AssetKind;
     fields: readonly string[];
     dict: Record<string, string[]>;
     rows: unknown[][];
     order: { chrono: number[] };
-    postings: {
-        country: Record<string, number[]>;
-        region: Record<string, number[]>;
-        year: Record<string, number[]>;
-        tag: Record<string, number[]>;
-        camera: Record<string, number[]>;
-    };
+    postings: Record<string, Record<string, number[]>>;
     count: number;
 };
 
@@ -67,77 +91,18 @@ class Interner {
     }
 }
 
-function pushPosting(target: Record<string, number[]>, key: string, rowIndex: number) {
-    const bucket = target[key];
-    if (bucket) bucket.push(rowIndex);
-    else target[key] = [rowIndex];
+function pushPosting(target: Record<string, Record<string, number[]>>, group: string, key: string, rowIndex: number) {
+    const bucket = (target[group] ??= {});
+    (bucket[key] ??= []).push(rowIndex);
 }
 
 /**
- * Build the catalog payload.
- *
- * Rows are emitted in a stable order — by uid — so that the serialized bytes
- * depend only on content. If row order tracked a database query's whim, two
- * runs over identical data would produce different bytes and the publish diff
- * would rewrite the catalog every time.
+ * Chronological order, precomputed so the client never sorts. Every result set
+ * is a filtered projection of this, which also keeps order stable as filters
+ * change. Undated rows sort last, ties broken by uid so the result is total.
  */
-export function buildCatalog(assets: CatalogAsset[]): Catalog {
-    const ordered = [...assets].sort((a, b) => (a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0));
-
-    const interners: Record<DictColumn, Interner> = {
-        country: new Interner(),
-        region: new Interner(),
-        city: new Interner(),
-        place: new Interner(),
-        camera: new Interner(),
-        tags: new Interner(),
-    };
-
-    const rows: unknown[][] = [];
-    const postings: Catalog["postings"] = {
-        country: {},
-        region: {},
-        year: {},
-        tag: {},
-        camera: {},
-    };
-
-    ordered.forEach((asset, rowIndex) => {
-        const country = asset.countryCode ? interners.country.intern(asset.countryCode) : null;
-        const region = asset.regionCode ? interners.region.intern(asset.regionCode) : null;
-        const city = asset.city ? interners.city.intern(asset.city) : null;
-        const place = asset.place ? interners.place.intern(asset.place) : null;
-        const camera = asset.camera ? interners.camera.intern(asset.camera) : null;
-        const tagIds = [...asset.tags].sort().map((tag) => interners.tags.intern(tag));
-
-        rows.push([
-            asset.uid,
-            asset.slug,
-            asset.takenAt,
-            country,
-            region,
-            city,
-            place,
-            asset.title,
-            camera,
-            asset.width,
-            asset.height,
-            asset.lqip,
-            tagIds,
-        ]);
-
-        if (asset.countryCode) pushPosting(postings.country, asset.countryCode, rowIndex);
-        if (asset.regionCode) pushPosting(postings.region, asset.regionCode, rowIndex);
-        if (asset.camera) pushPosting(postings.camera, asset.camera, rowIndex);
-        if (asset.takenAt) pushPosting(postings.year, asset.takenAt.slice(0, 4), rowIndex);
-        // Tag postings key on the interned id, matching §8.1's `"tag": { "3": … }`.
-        for (const tagId of tagIds) pushPosting(postings.tag, String(tagId), rowIndex);
-    });
-
-    // Precomputed chronological order: the client never sorts, and every result
-    // set is a filtered projection of this, which also keeps result order stable
-    // as filters change. Undated rows sort last, then by uid so ties are stable.
-    const chrono = ordered
+function chronoOrder(ordered: CatalogAsset[]) {
+    return ordered
         .map((asset, index) => ({ index, takenAt: asset.takenAt, uid: asset.uid }))
         .sort((a, b) => {
             if (a.takenAt && b.takenAt) {
@@ -147,54 +112,180 @@ export function buildCatalog(assets: CatalogAsset[]): Catalog {
             return a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0;
         })
         .map((entry) => entry.index);
+}
 
-    // Sort each posting list so the serialization is order-independent.
-    for (const group of Object.values(postings)) {
+function finalize(catalog: Catalog): Catalog {
+    // Sort every posting list so the serialization is order-independent.
+    for (const group of Object.values(catalog.postings)) {
         for (const key of Object.keys(group)) group[key].sort((a, b) => a - b);
     }
+    return catalog;
+}
 
-    return {
+/**
+ * Build a catalog for one medium.
+ *
+ * Rows are emitted sorted by uid so the serialized bytes depend only on
+ * content. If row order tracked a database query's whim, two runs over
+ * identical data would differ and the publish diff would rewrite the catalog
+ * every time.
+ */
+export function buildCatalog(assets: CatalogAsset[], kind: AssetKind = "photography"): Catalog {
+    const ordered = [...assets].sort((a, b) => (a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0));
+    return kind === "artwork" ? buildArtworkCatalog(ordered) : buildPhotoCatalog(ordered);
+}
+
+function buildPhotoCatalog(ordered: CatalogAsset[]): Catalog {
+    const country = new Interner();
+    const region = new Interner();
+    const city = new Interner();
+    const place = new Interner();
+    const camera = new Interner();
+    const tagsInterner = new Interner();
+
+    const rows: unknown[][] = [];
+    const postings: Catalog["postings"] = { country: {}, region: {}, year: {}, tag: {}, camera: {} };
+
+    ordered.forEach((asset, rowIndex) => {
+        const tagIds = [...asset.tags].sort().map((tag) => tagsInterner.intern(tag));
+
+        rows.push([
+            asset.uid,
+            asset.slug,
+            asset.takenAt,
+            asset.countryCode ? country.intern(asset.countryCode) : null,
+            asset.regionCode ? region.intern(asset.regionCode) : null,
+            asset.city ? city.intern(asset.city) : null,
+            asset.place ? place.intern(asset.place) : null,
+            asset.title,
+            asset.camera ? camera.intern(asset.camera) : null,
+            asset.width,
+            asset.height,
+            asset.lqip,
+            tagIds,
+        ]);
+
+        if (asset.countryCode) pushPosting(postings, "country", asset.countryCode, rowIndex);
+        if (asset.regionCode) pushPosting(postings, "region", asset.regionCode, rowIndex);
+        if (asset.camera) pushPosting(postings, "camera", asset.camera, rowIndex);
+        if (asset.takenAt) pushPosting(postings, "year", asset.takenAt.slice(0, 4), rowIndex);
+        // Tag postings key on the interned id, matching §8.1's `"tag": { "3": … }`.
+        for (const tagId of tagIds) pushPosting(postings, "tag", String(tagId), rowIndex);
+    });
+
+    return finalize({
         v: 1,
-        fields: CATALOG_FIELDS,
+        kind: "photography",
+        fields: PHOTO_FIELDS,
         dict: {
-            country: interners.country.toArray(),
-            region: interners.region.toArray(),
-            city: interners.city.toArray(),
-            place: interners.place.toArray(),
-            camera: interners.camera.toArray(),
-            tags: interners.tags.toArray(),
+            country: country.toArray(),
+            region: region.toArray(),
+            city: city.toArray(),
+            place: place.toArray(),
+            camera: camera.toArray(),
+            tags: tagsInterner.toArray(),
         },
         rows,
-        order: { chrono },
+        order: { chrono: chronoOrder(ordered) },
         postings,
         count: ordered.length,
-    };
+    });
 }
+
+function buildArtworkCatalog(ordered: CatalogAsset[]): Catalog {
+    const tagsInterner = new Interner();
+    const seriesInterner = new Interner();
+
+    const rows: unknown[][] = [];
+    const postings: Catalog["postings"] = { year: {}, tag: {}, series: {} };
+
+    ordered.forEach((asset, rowIndex) => {
+        const tagIds = [...asset.tags].sort().map((tag) => tagsInterner.intern(tag));
+        const seriesIds = [...(asset.series ?? [])].sort().map((slug) => seriesInterner.intern(slug));
+
+        rows.push([
+            asset.uid,
+            asset.slug,
+            asset.takenAt,
+            asset.year ?? null,
+            asset.title,
+            asset.width,
+            asset.height,
+            asset.lqip,
+            tagIds,
+            seriesIds,
+            asset.rotate ?? null,
+        ]);
+
+        // Artwork is faceted by year rather than by full date: the site shows a
+        // year, and several works carry only that much precision.
+        const year = asset.year || (asset.takenAt ? asset.takenAt.slice(0, 4) : null);
+        if (year) pushPosting(postings, "year", year, rowIndex);
+        for (const tagId of tagIds) pushPosting(postings, "tag", String(tagId), rowIndex);
+        // Series postings key on the slug, which is what the site routes on.
+        for (const slug of asset.series ?? []) pushPosting(postings, "series", slug, rowIndex);
+    });
+
+    return finalize({
+        v: 1,
+        kind: "artwork",
+        fields: ARTWORK_FIELDS,
+        dict: { tags: tagsInterner.toArray(), series: seriesInterner.toArray() },
+        rows,
+        order: { chrono: chronoOrder(ordered) },
+        postings,
+        count: ordered.length,
+    });
+}
+
+export type SeriesEntry = {
+    slug: string;
+    title: string;
+    description: string;
+    /** Member uids, in curated order. */
+    artworks: string[];
+};
 
 export type Manifest = {
     v: number;
-    catalog: string;
-    count: number;
+    /** Content-hashed catalog filenames, one per medium. */
+    catalogs: Record<string, string>;
+    counts: Record<string, number>;
+    series: SeriesEntry[];
     generated: string;
     generatorVersion: string;
+    /**
+     * Retained from the original contract. Sharding is a size escape hatch,
+     * distinct from the per-medium split, which is about shape.
+     */
     shards: null;
 };
 
 /**
  * The manifest is the one mutable object, so it is deliberately tiny and served
  * no-cache. It carries a timestamp because it is not content-addressed; the
- * catalog it points at is.
+ * catalogs it points at are.
+ *
+ * Series live here rather than in the artwork catalog: they are a handful of
+ * curated lists that the landing page needs before it has any artwork rows, and
+ * putting them behind the catalog fetch would serialise two round trips.
  */
 export function buildManifest(input: {
-    catalogKey: string;
-    count: number;
+    catalogKeys: Record<string, string>;
+    counts: Record<string, number>;
+    series: SeriesEntry[];
     generatorVersion: string;
     generatedAt: Date;
 }): Manifest {
+    const catalogs: Record<string, string> = {};
+    for (const [kind, key] of Object.entries(input.catalogKeys)) {
+        catalogs[kind] = key.split("/").pop() || key;
+    }
     return {
-        v: 1,
-        catalog: input.catalogKey.split("/").pop() || input.catalogKey,
-        count: input.count,
+        v: 2,
+        catalogs,
+        counts: input.counts,
+        series: input.series,
         generated: input.generatedAt.toISOString(),
         generatorVersion: input.generatorVersion,
         shards: null,
