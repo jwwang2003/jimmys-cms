@@ -92,3 +92,51 @@ cd /opt/jimmys-cms && sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=sha-<old-sha>|' .env && 
   but a Next build on a small droplet is slow and can OOM. Rejected.
 - **DigitalOcean App Platform** — no droplet management, but a SQLite file on
   local disk doesn't survive it. Rejected given the current data layer.
+
+## Backups — Litestream to R2
+
+The SQLite catalog is the one piece of state a container replacement cannot
+rebuild. Masters and derivatives live in R2; the database holds everything
+authored on top of them — tags, locations, geocoding, the build ledger — and
+`docker compose up -d` destroys a container routinely. So replication runs from
+day one rather than being added after the first loss.
+
+`deploy/litestream.yml` replicates `/data/sqlite.db` continuously. It ships the
+WAL, so a restore lands within seconds of the failure rather than at the last
+snapshot. It shares the `cms-data` volume rather than talking over the network,
+because SQLite replication needs filesystem access to the database and its WAL.
+
+**Use a third bucket.** Backups are private and must not sit behind the media
+bucket's public custom domain. Create `jimmys-cms-backups` and a token scoped to
+it, then add to `/opt/jimmys-cms/.env`:
+
+```
+R2_ENDPOINT=https://<account id>.r2.cloudflarestorage.com
+R2_BUCKET_BACKUPS=jimmys-cms-backups
+R2_ACCESS_KEY_ID_BACKUPS=...
+R2_SECRET_ACCESS_KEY_BACKUPS=...
+```
+
+Restore:
+
+```bash
+docker compose stop cms
+docker run --rm -v jimmys-cms_cms-data:/data -v /opt/jimmys-cms/litestream.yml:/etc/litestream.yml:ro \
+  --env-file /opt/jimmys-cms/.env litestream/litestream:0.3 \
+  restore -config /etc/litestream.yml /data/sqlite.db
+docker compose start cms
+```
+
+Verify the replica is live rather than assuming it — a backup nobody has
+restored is a hypothesis:
+
+```bash
+docker compose logs litestream | tail
+docker compose exec litestream litestream snapshots /data/sqlite.db
+```
+
+## The .next/cache volume
+
+Next's build cache is mounted as `cms-next-cache`. Without it the cache is cold
+after every container replacement, which a stop-start deploy does on every
+release.

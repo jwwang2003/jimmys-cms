@@ -11,6 +11,9 @@ services:
       SQLITE_URL: /data/sqlite.db
     volumes:
       - cms-data:/data
+      # Next's build cache. Without a volume it is rebuilt from cold on every
+      # container replacement, which a stop-start deploy does every time.
+      - cms-next-cache:/app/.next/cache
     # Bound to loopback: the reverse proxy terminates TLS and forwards here.
     ports:
       - "127.0.0.1:3000:3000"
@@ -26,5 +29,29 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Continuous replication of the SQLite file to R2.
+  #
+  # The catalog is as irreplaceable as the masters and is the one piece of state
+  # a container replacement cannot rebuild, so this runs from day one rather
+  # than being added after the first loss. Litestream ships the WAL, so recovery
+  # is to the last few seconds rather than to the last snapshot.
+  #
+  # It shares the volume with the CMS rather than running as a sidecar over the
+  # network: SQLite replication requires filesystem access to the database and
+  # its WAL.
+  litestream:
+    image: litestream/litestream:0.3
+    container_name: jimmys-cms-litestream
+    restart: unless-stopped
+    depends_on:
+      - cms
+    env_file:
+      - .env
+    volumes:
+      - cms-data:/data
+      - ./litestream.yml:/etc/litestream.yml:ro
+    command: replicate -config /etc/litestream.yml
+
 volumes:
   cms-data:
+  cms-next-cache:
