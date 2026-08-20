@@ -13,11 +13,3 @@ export async function requireCmsSession() {
 export function canEdit(role: string) {
     return role === "admin" || role === "user";
 }
-
-export async function requireEditorSession() {
-    const session = await requireCmsSession();
-    if (!canEdit(session.role)) {
-        throw new Error("Guests have read-only access");
-    }
-    return session;
-}

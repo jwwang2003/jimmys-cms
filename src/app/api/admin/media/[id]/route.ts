@@ -9,10 +9,11 @@ export const runtime = "nodejs";
 
 function getAssetId(raw: string) {
     const id = Number(raw);
-    if (!Number.isFinite(id)) {
-        throw new Error("Invalid asset id");
-    }
-    return id;
+    return Number.isFinite(id) ? id : null;
+}
+
+function invalidAssetId() {
+    return NextResponse.json({ error: "Invalid asset id" }, { status: 400 });
 }
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
@@ -22,8 +23,13 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     }
 
     const { id } = await context.params;
-    const asset = getMediaDetail(getAssetId(id));
-    if (!asset) {
+    const assetId = getAssetId(id);
+    if (assetId === null) return invalidAssetId();
+    const asset = getMediaDetail(assetId);
+    // Non-public assets 404 for non-editors rather than 403: a guest session
+    // is mintable by anyone, and confirming a private asset id exists is
+    // itself a leak.
+    if (!asset || (!canEdit(session.role) && asset.visibility !== "public")) {
         return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     return NextResponse.json({ asset, role: session.role });
@@ -39,8 +45,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     }
 
     const { id } = await context.params;
-    const body = await request.json();
-    const asset = applyMediaUpdate(getAssetId(id), normalizeAssetUpdatePayload(body));
+    const assetId = getAssetId(id);
+    if (assetId === null) return invalidAssetId();
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+        return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const asset = applyMediaUpdate(assetId, normalizeAssetUpdatePayload(body));
     return NextResponse.json({ ok: true, asset });
 }
 
@@ -61,6 +72,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         return NextResponse.json({ error: "Unsupported action" }, { status: 400 });
     }
 
-    const result = await refreshMediaAssetGeolocation(getAssetId(id));
+    const assetId = getAssetId(id);
+    if (assetId === null) return invalidAssetId();
+    const result = await refreshMediaAssetGeolocation(assetId);
     return NextResponse.json({ ok: true, ...result });
 }

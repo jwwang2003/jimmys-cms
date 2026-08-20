@@ -1,5 +1,3 @@
-"use server"
-
 import { HeadBucketCommand } from "@aws-sdk/client-s3";
 import { getS3, buckets, bucket as defaultBucket, region as defaultRegion } from "@/lib/s3";
 

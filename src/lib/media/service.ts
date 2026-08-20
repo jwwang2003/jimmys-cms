@@ -89,6 +89,22 @@ export function determineManagedMediaType(fileName: string, mimeType?: string | 
     return "other" as const;
 }
 
+const MANAGED_PREFIXES = ["content", "media", "public", "meta"] as const;
+
+/**
+ * A user-supplied folder path only steers the key *inside* the managed
+ * prefix; a `..` segment must not climb out of it, and R2 would happily store
+ * the literal `media/../x` key. Unsafe segments are dropped rather than
+ * rejected so an upload still lands under a safe key.
+ */
+function sanitizeKeyPath(path?: string) {
+    return (path || "")
+        .split("/")
+        .map((segment) => segment.trim())
+        .filter((segment) => segment !== "" && segment !== "." && segment !== ".." && !segment.includes("\\"))
+        .join("/");
+}
+
 export function buildManagedObjectKey(
     mediaType: "image" | "video" | "other",
     fileName: string,
@@ -102,7 +118,11 @@ export function buildManagedObjectKey(
     if (mediaType === "video") {
         return buildKey("media", "videos", suffix);
     }
-    return buildKey(prefix, path || "", suffix);
+    // Routes cast the prefix straight off the request body, so an unknown
+    // value must degrade to the default instead of silently keying to the
+    // bucket root (buildKey drops prefixes it does not recognise).
+    const safePrefix = (MANAGED_PREFIXES as readonly string[]).includes(prefix) ? prefix : "media";
+    return buildKey(safePrefix, sanitizeKeyPath(path), suffix);
 }
 
 async function bodyToBuffer(body: BodyToBufferInput): Promise<Buffer> {

@@ -35,6 +35,22 @@ function base64UrlDecode(value: string) {
     return Buffer.from(padded, "base64");
 }
 
+/**
+ * Constant-time string equality. `!==` short-circuits at the first differing
+ * byte, which lets an attacker binary-search a forged signature one character
+ * at a time; XOR-accumulating over the full width does not. Kept dependency
+ * free (no node:crypto) because this module is also bundled into the edge
+ * middleware.
+ */
+function timingSafeEqualStr(a: string, b: string) {
+    const width = Math.max(a.length, b.length);
+    let diff = a.length === b.length ? 0 : 1;
+    for (let i = 0; i < width; i++) {
+        diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+    }
+    return diff === 0;
+}
+
 async function signMessage(message: string) {
     const keyData = new TextEncoder().encode(getSessionSecret());
     const key = await crypto.subtle.importKey(
@@ -65,7 +81,7 @@ export async function verifySessionToken(token: string): Promise<SessionPayload>
     }
 
     const expectedSignature = await signMessage(encodedPayload);
-    if (expectedSignature !== suppliedSignature) {
+    if (!timingSafeEqualStr(expectedSignature, suppliedSignature)) {
         throw new Error("Invalid session signature");
     }
 

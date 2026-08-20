@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { takeGuestToken } from "@/lib/guest-throttle";
 import { createSessionToken } from "@/lib/session-core";
 import { clearSessionCookie, writeSessionCookie } from "@/lib/session";
 import { ensureDefaultAdmin, registerUser, validateLogin } from "@/db/operations";
@@ -8,6 +9,16 @@ export const runtime = "nodejs";
 
 function badRequest(message: string, status = 400) {
     return NextResponse.json({ error: message }, { status });
+}
+
+/**
+ * Editor accounts ("user" role) can upload, delete, and publish media, so an
+ * internet-facing instance must not hand them out to anyone who finds /login.
+ * Guests stay open: they are read-only by construction.
+ */
+function editorRegistrationAllowed() {
+    if (process.env.ALLOW_PUBLIC_REGISTRATION === "1") return true;
+    return process.env.NODE_ENV !== "production";
 }
 
 export async function POST(request: Request) {
@@ -25,7 +36,22 @@ export async function POST(request: Request) {
             const username = String(body.username || "");
             const role = body.role === "guest" ? "guest" : "user";
             const password = String(body.password || "");
-            const user = await registerUser({ username, password, role });
+            if (role === "user" && !editorRegistrationAllowed()) {
+                return badRequest("Registration is disabled on this instance", 403);
+            }
+            // Guest registration shares the guest sign-in throttle: both are
+            // unauthenticated inserts into the users table.
+            if (role === "guest" && !takeGuestToken()) {
+                return badRequest("Too many guest sign-ins right now; try again in a minute", 429);
+            }
+            let user;
+            try {
+                user = await registerUser({ username, password, role });
+            } catch (error) {
+                // registerUser only throws validation failures (taken username,
+                // short password), which are the caller's to fix.
+                return badRequest(error instanceof Error ? error.message : "Could not register", 400);
+            }
             const token = await createSessionToken({
                 userId: user.id,
                 username: user.username || user.name,
@@ -65,7 +91,9 @@ export async function POST(request: Request) {
             },
         });
     } catch (error) {
-        const message = error instanceof Error ? error.message : "Internal server error";
-        return badRequest(message, 500);
+        // Unexpected failures (database, JSON parse) log server-side; the
+        // response stays generic so internals never reach the login form.
+        console.error("[login] unexpected failure:", error);
+        return badRequest("Internal server error", 500);
     }
 }

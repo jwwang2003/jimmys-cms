@@ -86,6 +86,35 @@ async function withModuleMocks(mocks, run) {
 
         assert.equal(stored.filename, "001+Casamar+20190419.JPG");
         assert.match(stored.object_key, /^content\/images\/[a-f0-9-]+\.jpg$/i);
+
+        // A client-supplied folder path must not climb out of the managed
+        // prefix, and an unknown prefix must fall back instead of keying to
+        // the bucket root. "other" uploads return null (no media_assets row),
+        // so assert on the storage_objects snapshot instead.
+        const latestObjectKey = () =>
+          sqlite.prepare("select object_key from storage_objects order by id desc limit 1").get().object_key;
+
+        await uploadMediaAsset({
+          storageId: "default",
+          prefix: "media",
+          path: "../../escape/../loose",
+          fileName: "notes.txt",
+          bytes: new Uint8Array([1]),
+          mimeType: "text/plain",
+        });
+        const escapeeKey = latestObjectKey();
+        assert.equal(escapeeKey.includes(".."), false);
+        assert.match(escapeeKey, /^media\/escape\/loose\/[a-f0-9-]+\.txt$/i);
+
+        await uploadMediaAsset({
+          storageId: "default",
+          prefix: "evil",
+          path: "docs",
+          fileName: "readme.txt",
+          bytes: new Uint8Array([1]),
+          mimeType: "text/plain",
+        });
+        assert.match(latestObjectKey(), /^media\/docs\/[a-f0-9-]+\.txt$/i);
       }
     );
 

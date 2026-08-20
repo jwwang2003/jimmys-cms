@@ -19,7 +19,10 @@ export async function GET(request: Request) {
         query: searchParams.get("query") || "",
         mediaType: searchParams.get("mediaType") || "all",
         status: searchParams.get("status") || "all",
-        visibility: searchParams.get("visibility") || "all",
+        // Guests browse read-only, but read-only is not "read everything":
+        // anyone can mint a guest session from /login, so non-editors are
+        // pinned to public assets no matter what the query string asks for.
+        visibility: canEdit(session.role) ? searchParams.get("visibility") || "all" : "public",
     });
 
     return NextResponse.json({ assets, role: session.role });

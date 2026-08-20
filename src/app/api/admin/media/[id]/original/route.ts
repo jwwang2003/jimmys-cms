@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
+import { canEdit } from "@/lib/authz";
 import { getCurrentSession } from "@/lib/session";
 import { getS3 } from "@/lib/s3";
 import { getMediaAssetById } from "@/lib/media/repository";
@@ -28,6 +29,12 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const session = await getCurrentSession();
     if (!session) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    // Masters are the private originals; handing out a signed URL is an
+    // editor capability. Guest sessions are mintable by anyone from /login,
+    // so a session alone must not unlock the masters bucket.
+    if (!canEdit(session.role)) {
+        return NextResponse.json({ error: "Guests cannot download originals" }, { status: 403 });
     }
     try {
         const { id } = await context.params;

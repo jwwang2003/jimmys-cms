@@ -43,6 +43,27 @@ const { normalizeAssetUpdatePayload } = require("../src/lib/media/forms.ts");
   );
   assert.equal(actionsRouteSource.includes("refreshManyGeocodes"), true);
 
+  // Guest sessions are mintable by anyone, so the read routes must scope by
+  // role: the list pins non-editors to public visibility, the detail route
+  // 404s non-public assets, and originals are editor-only.
+  const listRouteSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "app", "api", "admin", "media", "route.ts"),
+    "utf8"
+  );
+  assert.equal(listRouteSource.includes('canEdit(session.role) ? searchParams.get("visibility") || "all" : "public"'), true);
+
+  const detailRouteSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "app", "api", "admin", "media", "[id]", "route.ts"),
+    "utf8"
+  );
+  assert.equal(detailRouteSource.includes('!canEdit(session.role) && asset.visibility !== "public"'), true);
+
+  const originalRouteSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "app", "api", "admin", "media", "[id]", "original", "route.ts"),
+    "utf8"
+  );
+  assert.equal(originalRouteSource.includes("canEdit(session.role)"), true);
+
   console.log("media-api-contract.test.js ok");
 })().catch((error) => {
   console.error(error);

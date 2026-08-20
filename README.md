@@ -101,7 +101,8 @@ So far the only AWS service used are the S3 buckets.
 The app now includes a simple signed-cookie login flow separate from Better Auth's stock UI.
 
 - `admin` is bootstrapped automatically from `ADMIN_USERNAME` and `ADMIN_PASSWORD`
-- `user` accounts can register with a password
+- `user` accounts can register with a password — in production this is disabled
+  unless `ALLOW_PUBLIC_REGISTRATION=1`, because users hold edit rights
 - `guest` accounts can register with or without a password
 - `/login` also supports one-click passwordless guest access
 - Guests are read-only inside the CMS; admins and users can upload, sync, and edit media

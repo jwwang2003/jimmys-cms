@@ -9,6 +9,7 @@ import {
     HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { buckets, getS3, buildKey, prefixes as knownPrefixes } from "@/lib/s3";
+import { getCurrentSession } from "@/lib/session";
 
 type BodyToBufferInput =
     | ReadableStream<Uint8Array>
@@ -28,6 +29,21 @@ function isDev() {
 
 function devOnlyResponse() {
     return new Response("Forbidden: dev-only endpoint", { status: 403 });
+}
+
+/**
+ * Belt and braces: the env gate alone means any deployment that forgets
+ * NODE_ENV=production silently exposes raw bucket CRUD to the internet. This
+ * endpoint can read and delete masters, so it additionally demands an admin
+ * session even in dev.
+ */
+async function requireDevAdmin() {
+    if (!isDev()) return devOnlyResponse();
+    const session = await getCurrentSession();
+    if (!session || session.role !== "admin") {
+        return new Response("Forbidden: admin session required", { status: 403 });
+    }
+    return null;
 }
 
 async function bodyToBuffer(body: BodyToBufferInput): Promise<Buffer> {
@@ -86,7 +102,8 @@ function parseParams(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-    if (!isDev()) return devOnlyResponse();
+    const denied = await requireDevAdmin();
+    if (denied) return denied;
 
     try {
         const { alias, prefixName, path, key, search, token, maxKeys, op, metaKey, metaValue, metaMatch, headLimit } =
@@ -203,7 +220,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest) {
-    if (!isDev()) return devOnlyResponse();
+    const denied = await requireDevAdmin();
+    if (denied) return denied;
     try {
         const body = await req.json();
         const alias = (body.alias || "default").toLowerCase();
@@ -223,7 +241,8 @@ export async function PUT(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    if (!isDev()) return devOnlyResponse();
+    const denied = await requireDevAdmin();
+    if (denied) return denied;
     try {
         const contentType = req.headers.get("content-type") || "";
         if (contentType.includes("application/json")) {
@@ -280,7 +299,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-    if (!isDev()) return devOnlyResponse();
+    const denied = await requireDevAdmin();
+    if (denied) return denied;
     try {
         const { alias, key } = parseParams(req);
         if (!key) return new Response("Missing key", { status: 400 });
