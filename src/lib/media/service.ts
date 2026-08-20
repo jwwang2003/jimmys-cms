@@ -44,12 +44,23 @@ type BodyToBufferInput =
     | undefined;
 
 function objectUrlFromKey(storageId: string, key: string) {
-    const { bucket, region } = getS3(storageId);
+    const { bucket, region, endpoint, cdnBaseUrl } = getS3(storageId);
     if (!bucket) return null;
-    if (region) {
-        return `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+    const encoded = key.split("/").map(encodeURIComponent).join("/");
+    // A CDN base URL is the address the object is actually served from, so it
+    // wins over anything derived from the bucket.
+    if (cdnBaseUrl) {
+        return `${cdnBaseUrl.replace(/\/+$/, "")}/${encoded}`;
     }
-    return `https://${bucket}.s3.amazonaws.com/${key}`;
+    // Non-AWS S3 (R2): the account endpoint addresses buckets path-style.
+    // Building an amazonaws.com URL here would be a link to nowhere.
+    if (endpoint) {
+        return `${endpoint.replace(/\/+$/, "")}/${bucket}/${encoded}`;
+    }
+    if (region) {
+        return `https://${bucket}.s3.${region}.amazonaws.com/${encoded}`;
+    }
+    return `https://${bucket}.s3.amazonaws.com/${encoded}`;
 }
 
 function folderTypeForMediaType(mediaType: "image" | "video" | "other") {
@@ -217,19 +228,29 @@ export async function syncS3Prefix(input: {
     storageId?: string;
     prefix?: "content" | "media" | "public" | "meta";
     path?: string;
+    /**
+     * Literal key prefix, bypassing the four configured `prefixes`. Buckets the
+     * CMS did not lay out itself — the R2 masters bucket, for one — do not use
+     * those names.
+     */
+    rawPrefix?: string;
+    /** Stop after this many objects. Undefined means the whole prefix. */
+    limit?: number;
+    /** Page size for each ListObjectsV2 call. */
     maxKeys?: number;
+    /** Skip the byte-for-byte EXIF read. Listing alone is cheap; this is not. */
+    skipExif?: boolean;
+    /**
+     * Create a `media_assets` row per object. Set false to record what the
+     * bucket holds without cataloguing it — the retained-but-uncatalogued
+     * `masters/orphaned` tree is exactly this case.
+     */
+    createAssets?: boolean;
+    onProgress?: (done: number, key: string) => void;
 }) {
     const storageId = input.storageId || "default";
     const { client, bucket } = getS3(storageId);
-    const prefixValue = buildKey(input.prefix || "media", input.path || "");
-
-    const response = await client.send(
-        new ListObjectsV2Command({
-            Bucket: bucket,
-            Prefix: prefixValue,
-            MaxKeys: input.maxKeys || 200,
-        })
-    );
+    const prefixValue = input.rawPrefix ?? buildKey(input.prefix || "media", input.path || "");
 
     const summary = {
         discovered: 0,
@@ -238,8 +259,31 @@ export async function syncS3Prefix(input: {
         invalid: 0,
     };
 
-    for (const object of response.Contents || []) {
+    // ListObjectsV2 returns at most 1000 keys per call. The previous single-shot
+    // request silently stopped at the first page, so a bucket larger than the
+    // page size synced partially and reported success.
+    const objects: Array<{ Key?: string; Size?: number; ETag?: string; LastModified?: Date }> = [];
+    let continuationToken: string | undefined;
+    do {
+        const response = await client.send(
+            new ListObjectsV2Command({
+                Bucket: bucket,
+                Prefix: prefixValue,
+                MaxKeys: input.maxKeys || 1000,
+                ContinuationToken: continuationToken,
+            })
+        );
+        objects.push(...(response.Contents || []));
+        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+        if (input.limit && objects.length >= input.limit) break;
+    } while (continuationToken);
+
+    const selected = input.limit ? objects.slice(0, input.limit) : objects;
+
+    for (const object of selected) {
         if (!object.Key) continue;
+        // A "directory" placeholder, not a file.
+        if (object.Key.endsWith("/")) continue;
         summary.discovered += 1;
         const mimeType = object.Key.endsWith(".mp4")
             ? "video/mp4"
@@ -252,7 +296,7 @@ export async function syncS3Prefix(input: {
             sizeBytes: Number(object.Size || 0),
         });
         let photoExif = null;
-        if (classification.mediaType === "image") {
+        if (classification.mediaType === "image" && !input.skipExif) {
             try {
                 const objectResponse = await client.send(new GetObjectCommand({ Bucket: bucket, Key: object.Key }));
                 const bytes = await bodyToBuffer(objectResponse.Body as BodyToBufferInput);
@@ -263,7 +307,7 @@ export async function syncS3Prefix(input: {
         }
 
         let assetId: number | null = null;
-        if (classification.mediaType !== "other") {
+        if (classification.mediaType !== "other" && input.createAssets !== false) {
             assetId = upsertMediaAssetFromObject({
                 title: classification.title,
                 mediaType: classification.mediaType,
@@ -305,6 +349,8 @@ export async function syncS3Prefix(input: {
             warnings: classification.warnings,
             assetId,
         });
+
+        input.onProgress?.(summary.discovered, object.Key);
     }
 
     return summary;
