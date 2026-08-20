@@ -54,6 +54,100 @@ type AddressComponent = {
 };
 
 /**
+ * Google's `administrative_area_level_1.short_name` is a real ISO 3166-2
+ * subdivision code only in some countries — `ON`, `NY`, `IDF` — and elsewhere
+ * it is a name, in whichever language the response came back in. This catalog
+ * alone contains the same province under two spellings more than once:
+ * `Shanghai` and `Shang Hai Shi`, `Guangdong Province` and `Guang Dong Sheng`,
+ * `Lombardia` and `Lombardy`.
+ *
+ * Left alone that produces codes like `CN-Shang Hai Shi`, which are not ISO,
+ * do not match the region codes the site's map keys on, and split one province
+ * across two facet buckets.
+ *
+ * So names are normalised and looked up per country. Anything unmapped returns
+ * null rather than a guess: an absent region drops the asset out of region
+ * filters, where a wrong one silently files it under the wrong place.
+ */
+function normalizeRegionName(value: string) {
+    return value
+        .normalize("NFD")
+        // Strip combining marks so "Panamá" and "Panama" agree.
+        .replace(/[̀-ͯ]/g, "")
+        .toLowerCase()
+        // Administrative nouns carry no information and vary by response language.
+        .replace(/\b(provincia|province|prefecture|region|sheng|shi|oblast|city)\b/g, "")
+        .replace(/\bde\b/g, "")
+        // Collapse everything: the transliterated forms differ only by spacing
+        // ("shang hai" vs "shanghai").
+        .replace(/[^a-z0-9]/g, "");
+}
+
+const REGION_NAME_TO_ISO: Record<string, string> = {
+    // China
+    "CN:shanghai": "CN-SH",
+    "CN:guangdong": "CN-GD",
+    "CN:zhejiang": "CN-ZJ",
+    "CN:jiangsu": "CN-JS",
+    "CN:shandong": "CN-SD",
+    "CN:shanxi": "CN-SX",
+    "CN:beijing": "CN-BJ",
+    "CN:chongqing": "CN-CQ",
+    "CN:hunan": "CN-HN",
+    // Italy — Italian and English forms both appear.
+    "IT:lombardia": "IT-25",
+    "IT:lombardy": "IT-25",
+    "IT:toscana": "IT-52",
+    "IT:tuscany": "IT-52",
+    "IT:veneto": "IT-34",
+    // Panama
+    "PA:panamaoeste": "PA-10",
+    "PA:panama": "PA-8",
+    "PA:cocle": "PA-2",
+    // Japan
+    "JP:tokyo": "JP-13",
+    "JP:yamagata": "JP-06",
+    // Russia
+    "RU:sanktpeterburg": "RU-SPE",
+    "RU:saintpetersburg": "RU-SPE",
+};
+
+/**
+ * Cities whose province is unambiguous, for the responses that come back with a
+ * locality but no `administrative_area_level_1` at all — a city-level result.
+ *
+ * This is a lookup table, not an inference: Guangzhou is in Guangdong as a fact
+ * of administrative geography, not as a guess from the name. Anything not
+ * listed still resolves to null.
+ */
+const CITY_TO_REGION: Record<string, string> = {
+    "CN:guangzhou": "CN-GD",
+    "CN:hangzhou": "CN-ZJ",
+    "CN:yuncheng": "CN-SX",
+    "CN:wanrong": "CN-SX",
+    "CN:lijiang": "CN-YN",
+};
+
+/**
+ * True when Google already handed back an ISO 3166-2 suffix rather than a name.
+ * Real suffixes are short and uppercase (`ON`, `NY`, `IDF`, `25`).
+ */
+function looksLikeIsoSuffix(value: string) {
+    return /^[A-Z0-9]{1,3}$/.test(value);
+}
+
+export function regionCodeFrom(countryCode: string | null, adminAreaShortName: string | null | undefined) {
+    if (!countryCode || !adminAreaShortName) return null;
+    const raw = adminAreaShortName.trim();
+    if (!raw) return null;
+
+    if (/^[A-Z]{2}-/.test(raw)) return raw;
+    if (looksLikeIsoSuffix(raw)) return `${countryCode}-${raw}`;
+
+    return REGION_NAME_TO_ISO[`${countryCode}:${normalizeRegionName(raw)}`] ?? null;
+}
+
+/**
  * Pull ISO country and region codes out of a stored Google geocode response.
  *
  * Google returns the region as a bare subdivision code (`ON`, `SH`), while the
@@ -79,6 +173,7 @@ export function geographyFromGeocodeResponse(rawResponseJson: string | null | un
 
     let countryCode: string | null = null;
     let regionShort: string | null = null;
+    let locality: string | null = null;
 
     for (const component of components) {
         const types = component.types ?? [];
@@ -88,14 +183,20 @@ export function geographyFromGeocodeResponse(rawResponseJson: string | null | un
         if (types.includes("administrative_area_level_1") && component.short_name) {
             regionShort = component.short_name;
         }
+        if (types.includes("locality") && component.long_name) {
+            locality = component.long_name;
+        }
     }
 
-    if (!regionShort) return { countryCode, regionCode: null };
+    const regionCode = regionCodeFrom(countryCode, regionShort);
+    if (regionCode) return { countryCode, regionCode };
 
-    // Already fully qualified.
-    if (/^[A-Z]{2}-/.test(regionShort)) return { countryCode, regionCode: regionShort };
-    return {
-        countryCode,
-        regionCode: countryCode ? `${countryCode}-${regionShort}` : null,
-    };
+    // A city-level result has no province of its own. Fall back to the city
+    // only where the mapping is a matter of record.
+    if (countryCode && locality) {
+        const fromCity = CITY_TO_REGION[`${countryCode}:${normalizeRegionName(locality)}`];
+        if (fromCity) return { countryCode, regionCode: fromCity };
+    }
+
+    return { countryCode, regionCode: null };
 }

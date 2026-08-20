@@ -33,6 +33,13 @@ const outPath = arg("out");
     const { GENERATOR_VERSION } = require("../src/lib/publish/content-hash.ts");
     const { buildCatalog } = require("../src/lib/publish/catalog.ts");
 
+    const { materializeGeography } = require("../src/lib/publish/collect.ts");
+    if (!dryRun) {
+        const geo = materializeGeography();
+        console.log(`geography : ${geo.withCountry} country, ${geo.withRegion} region materialized
+`);
+    }
+
     const assets = collectPublishableAssets({ includeDrafts });
     console.log(`generator : v${GENERATOR_VERSION}`);
     console.log(`assets    : ${assets.length}${includeDrafts ? " (including drafts)" : " (published only)"}`);

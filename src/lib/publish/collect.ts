@@ -158,3 +158,61 @@ export function storeContentHashes(assets: Array<{ uid: string; contentHash: str
     });
     return assets.length;
 }
+
+/**
+ * Write resolved geography onto the asset's indexed columns.
+ *
+ * The plan calls for these to be materialised rather than derived per query:
+ * the map facets on them on every page, and resolving them means parsing a
+ * stored Google response per asset, which is not something to do in a request.
+ */
+export function materializeGeography(): { updated: number; withRegion: number; withCountry: number } {
+    const rows = db
+        .select({
+            id: mediaAssets.id,
+            metadataJson: mediaAssets.metadataJson,
+        })
+        .from(mediaAssets)
+        .where(eq(mediaAssets.lifecycleStatus, "active"))
+        .all();
+
+    let updated = 0;
+    let withRegion = 0;
+    let withCountry = 0;
+
+    db.transaction((tx) => {
+        for (const row of rows) {
+            const location = tx
+                .select({ rawResponseJson: assetLocations.rawResponseJson })
+                .from(assetLocations)
+                .where(eq(assetLocations.assetId, row.id))
+                .get();
+
+            const metadata = parseJsonObject(row.metadataJson);
+            const spreadsheet = parseJsonObject(
+                typeof metadata.spreadsheet === "object" && metadata.spreadsheet
+                    ? JSON.stringify(metadata.spreadsheet)
+                    : null
+            );
+
+            const geography = resolveGeography(
+                { countryCode: null, regionCode: null },
+                location?.rawResponseJson ?? null,
+                typeof spreadsheet.country === "string" ? spreadsheet.country : null
+            );
+
+            if (!geography.countryCode && !geography.regionCode) continue;
+
+            tx.update(mediaAssets)
+                .set({ countryCode: geography.countryCode, regionCode: geography.regionCode })
+                .where(eq(mediaAssets.id, row.id))
+                .run();
+
+            updated += 1;
+            if (geography.countryCode) withCountry += 1;
+            if (geography.regionCode) withRegion += 1;
+        }
+    });
+
+    return { updated, withRegion, withCountry };
+}

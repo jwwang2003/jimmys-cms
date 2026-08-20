@@ -156,17 +156,84 @@ function withHash(a) {
         assert.equal(countryCodeFromName(""), null);
         assert.equal(countryCodeFromName("Atlantis"), null);
 
-        const geocoded = geographyFromGeocodeResponse(
-            JSON.stringify({
-                address_components: [
-                    { short_name: "ON", types: ["administrative_area_level_1"] },
-                    { short_name: "CA", types: ["country"] },
-                ],
-            })
+        const geo = (components) => geographyFromGeocodeResponse(JSON.stringify({ results: [{ address_components: components }] }));
+
+        // Where Google returns a real subdivision code, it passes through.
+        assert.deepEqual(
+            geo([
+                { short_name: "ON", types: ["administrative_area_level_1"] },
+                { short_name: "CA", types: ["country"] },
+            ]),
+            { countryCode: "CA", regionCode: "CA-ON" }
         );
-        // Google returns a bare subdivision code; the catalog keys on ISO 3166-2.
-        assert.equal(geocoded.countryCode, "CA");
-        assert.equal(geocoded.regionCode, "CA-ON");
+
+        // Elsewhere it returns a name, in whichever language the response came
+        // back in. The same province arrives under two spellings in this very
+        // catalog, and both must collapse to one code or the facets fragment.
+        for (const name of ["Shanghai", "Shang Hai Shi"]) {
+            assert.equal(
+                geo([
+                    { short_name: name, types: ["administrative_area_level_1"] },
+                    { short_name: "CN", types: ["country"] },
+                ]).regionCode,
+                "CN-SH",
+                `${name} should resolve to CN-SH`
+            );
+        }
+        for (const name of ["Guangdong Province", "Guang Dong Sheng"]) {
+            assert.equal(
+                geo([
+                    { short_name: name, types: ["administrative_area_level_1"] },
+                    { short_name: "CN", types: ["country"] },
+                ]).regionCode,
+                "CN-GD"
+            );
+        }
+        for (const name of ["Lombardia", "Lombardy"]) {
+            assert.equal(
+                geo([
+                    { short_name: name, types: ["administrative_area_level_1"] },
+                    { short_name: "IT", types: ["country"] },
+                ]).regionCode,
+                "IT-25"
+            );
+        }
+        // Diacritics and administrative nouns must not defeat the lookup.
+        assert.equal(
+            geo([
+                { short_name: "Provincia de Panamá Oeste", types: ["administrative_area_level_1"] },
+                { short_name: "PA", types: ["country"] },
+            ]).regionCode,
+            "PA-10"
+        );
+
+        // A city-level result has no province; the city resolves it only where
+        // the mapping is a matter of record.
+        assert.equal(
+            geo([
+                { long_name: "Guangzhou", types: ["locality"] },
+                { short_name: "CN", types: ["country"] },
+            ]).regionCode,
+            "CN-GD"
+        );
+
+        // An unknown region must be null, never a fabricated code: a wrong
+        // region files the asset under the wrong place, where a null merely
+        // drops it from region filters.
+        assert.deepEqual(
+            geo([
+                { short_name: "Some Unmapped Province", types: ["administrative_area_level_1"] },
+                { short_name: "CN", types: ["country"] },
+            ]),
+            { countryCode: "CN", regionCode: null }
+        );
+        assert.equal(
+            geo([
+                { long_name: "Nowheresville", types: ["locality"] },
+                { short_name: "CN", types: ["country"] },
+            ]).regionCode,
+            null
+        );
 
         assert.deepEqual(geographyFromGeocodeResponse(null), { countryCode: null, regionCode: null });
         assert.deepEqual(geographyFromGeocodeResponse("not json"), { countryCode: null, regionCode: null });
