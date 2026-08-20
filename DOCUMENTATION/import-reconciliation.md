@@ -64,7 +64,7 @@ each explained below.
 ## Item 1 — `extra-venice`: a real photo with no spreadsheet row
 
 - **Site:** `id: "extra-venice"`, Venice, 2023-07-22, `camera: "Unknown"`, `tags: []`
-- **Master:** `Photography/087+Venice+2023-07-22.jpeg`
+- **Master:** `photography/087+Venice+2023-07-22.jpeg`
 - **Sheet:** no row
 
 This is the one genuine count difference (109 sheet rows vs. 110 site records
@@ -175,14 +175,14 @@ filenames now tell the truth and nothing downstream needs a special case:
 
 | Old key | New key |
 | --- | --- |
-| `Photography/074+西湖区+2023-05-01.JPG` | `Photography/075+西湖区+2023-05-01.JPG` |
-| `Photography/087+Venice+2023-07-22.jpeg` | `Photography/110+Venice+2023-07-22.jpeg` |
+| `photography/074+西湖区+2023-05-01.JPG` | `photography/075+西湖区+2023-05-01.JPG` |
+| `photography/087+Venice+2023-07-22.jpeg` | `photography/110+Venice+2023-07-22.jpeg` |
 
 Renamed in `assets-master` first, then uploaded to R2 and verified
 byte-for-byte — sha256 read back from the bucket — before the old keys were
 deleted. `extra-venice` takes id 110, the next free number.
 
-The Photography tree is now 110 files with 110 distinct ids: 001–110 complete,
+The photography tree is now 110 files with 110 distinct ids: 001–110 complete,
 no duplicates, no gaps.
 
 Item 3 (photo 016's dropped tag) needed no action. The importer merges sheet
@@ -205,3 +205,32 @@ remains the one artwork item that is not import-ready.
 `asset_locations` queued for geocoding (no Google Maps key is configured yet).
 
 `media_renditions` is still empty — that is §4.
+
+---
+
+## Path casing
+
+The master trees originally used a capitalised `Photography/` segment beside a
+lowercase `artwork-jpg/`. Both are now lowercase:
+
+```
+masters/originals/photography/   110 objects
+masters/orphaned/photography/      4 objects
+```
+
+Object keys are case-sensitive in S3 and R2, so this was a copy-then-delete
+rather than a rename — server-side copies, size-verified before anything was
+removed. Applied in the same pass to the local `assets-master` tree, the
+`media_assets` and `storage_objects` rows, and `r2-upload-receipt.json`.
+
+`assets-master/manifest.json` keeps `oldSrc: "/Photography/…"` unchanged. That
+field records where a file used to sit under the *site's* `public/` folder,
+which no longer exists in that form; the site's own tree has been
+`public/img/photography/` throughout.
+
+**The published catalog did not change.** Content hashes cover what the catalog
+says about an asset, and the master's storage key is not part of that — a
+private storage path is not something a reader can observe. The publish run
+after the rename emitted zero objects, which is the intended behaviour and a
+useful check that the internal layout is genuinely decoupled from the public
+contract.

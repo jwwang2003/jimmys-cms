@@ -3,7 +3,7 @@
  * Apply a metadata spreadsheet onto assets that already exist (plan §2).
  *
  *   node scripts/import-spreadsheet.js --file=data/photography_v1_0.xlsx \
- *     --key-prefix=masters/originals/Photography/ --dry-run
+ *     --key-prefix=masters/originals/photography/ --dry-run
  *
  * `--key-prefix` is not optional in practice: sheet ids restart at 1 for each
  * medium, so photography 001 and artwork 001 are different works that collide
