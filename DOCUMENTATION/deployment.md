@@ -33,39 +33,76 @@ swap**, not blue/green. Expect ~2–5 seconds of downtime per deploy.
 
 ## One-time droplet setup
 
+The target droplet (`web-droplet-0` / `do0`, Ubuntu 24.04) already has Docker
+28 + the compose plugin, and the login user `wjw` is in the `docker` group, so
+no root-level Docker setup is needed. Create the app directory once:
+
 ```bash
-ssh root@YOUR_DROPLET
-adduser --disabled-password deploy && usermod -aG docker deploy
-mkdir -p /opt/jimmys-cms && chown deploy:deploy /opt/jimmys-cms
+ssh web-droplet-0
+sudo mkdir -p /opt/jimmys-cms && sudo chown wjw:wjw /opt/jimmys-cms
 ```
 
-Install Docker Engine + compose plugin (DigitalOcean's Docker marketplace image
-already has both). Then create `/opt/jimmys-cms/.env` from `.env.example` with
-real production values — this file is **never** written by CI, only read:
+CI connects as the same user with a **dedicated** SSH keypair (generate one
+just for GitHub Actions; don't reuse your personal key). A separate
+`deploy` user works too if you'd rather CI not log in as you.
+
+Then create `/opt/jimmys-cms/.env` from `.env.example` with real production
+values — this file is **never** written by CI (CI only appends/updates the
+`IMAGE`/`IMAGE_TAG` lines), only read:
 
 ```
-S3_BUCKET=...
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-AWS_REGION=us-east-2
-SESSION_SECRET=<long random>
+SESSION_SECRET=<long random, e.g. openssl rand -hex 32>
 ADMIN_USERNAME=...
-ADMIN_PASSWORD=...
+ADMIN_PASSWORD=<long random>
 AUTH_BASE_URL=https://cms.jwwang.ca
 AUTH_TRUSTED_ORIGINS=https://cms.jwwang.ca
+
+R2_ACCOUNT_ID=...
+R2_BUCKET_MASTERS=jimmys-cms-masters
+R2_ACCESS_KEY_ID_MASTERS=...
+R2_SECRET_ACCESS_KEY_MASTERS=...
+R2_BUCKET_MEDIA=jimmys-cms-media
+R2_ACCESS_KEY_ID_MEDIA=...
+R2_SECRET_ACCESS_KEY_MEDIA=...
+R2_CDN_BASE_URL_MEDIA=https://media.jwwang.ca
 ```
 
-The container only listens on `127.0.0.1:3000`. Put Caddy in front for TLS —
-`deploy/Caddyfile` is a working config; `apt install caddy` and drop it at
-`/etc/caddy/Caddyfile`.
+### TLS: nginx, not Caddy, on this droplet
+
+`do0` already runs nginx + certbot for jwwang.ca, glorialan.com,
+homeassistant.jwwang.ca, and frigate.jwwang.ca — ports 80/443 are taken, so
+installing Caddy would conflict. The CMS gets a vhost in the same pattern
+(`deploy/Caddyfile` remains as the alternative for a fresh box):
+
+```bash
+sudo cp deploy/nginx/cms.jwwang.ca.conf /etc/nginx/sites-available/cms.jwwang.ca
+sudo ln -s /etc/nginx/sites-available/cms.jwwang.ca /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d cms.jwwang.ca -d cms.glorialan.com
+```
+
+### Cloudflare sits in front
+
+`cms.jwwang.ca` and `cms.glorialan.com` currently resolve to Cloudflare's
+proxy (orange cloud). That means:
+
+- Point both DNS records at `146.190.246.3`. Set the zone's SSL mode to
+  **Full (strict)** once the certbot cert exists; if the `--nginx` HTTP-01
+  challenge fails through the proxy, grey-cloud the record for a minute,
+  issue, then re-enable.
+- Cloudflare's free plan caps request bodies at ~100 MB. Camera originals
+  dodge this by design: the browser uploads them straight to R2 with a
+  presigned PUT, so only spreadsheets and API calls traverse the proxy.
+- SSE (batch-import progress) passes through Cloudflare fine; the nginx vhost
+  already disables proxy buffering for that route.
 
 ## Secrets and variables (GitHub repo settings)
 
 | Name | Kind | Value |
 | --- | --- | --- |
-| `DROPLET_HOST` | secret | droplet IP |
-| `DROPLET_USER` | secret | `deploy` |
-| `DROPLET_SSH_KEY` | secret | private key whose public half is in `~deploy/.ssh/authorized_keys` |
+| `DROPLET_HOST` | secret | `146.190.246.3` |
+| `DROPLET_USER` | secret | `wjw` |
+| `DROPLET_SSH_KEY` | secret | private half of a keypair generated just for CI; public half appended to `~wjw/.ssh/authorized_keys` |
 | `NEXT_PUBLIC_AUTH_BASE_URL` | variable | `https://cms.jwwang.ca` |
 
 `GITHUB_TOKEN` is automatic — it both pushes to GHCR and is forwarded over SSH
@@ -115,7 +152,14 @@ R2_ENDPOINT=https://<account id>.r2.cloudflarestorage.com
 R2_BUCKET_BACKUPS=jimmys-cms-backups
 R2_ACCESS_KEY_ID_BACKUPS=...
 R2_SECRET_ACCESS_KEY_BACKUPS=...
+COMPOSE_PROFILES=backup
 ```
+
+The litestream service sits behind the compose profile `backup`
+(`COMPOSE_PROFILES=backup` enables it). Until the bucket and token exist,
+`docker compose up -d` simply skips litestream instead of crash-looping on
+empty credentials. CI ships `deploy/litestream.yml` to the droplet alongside
+the compose file on every deploy.
 
 Restore:
 
@@ -140,3 +184,69 @@ docker compose exec litestream litestream snapshots /data/sqlite.db
 Next's build cache is mounted as `cms-next-cache`. Without it the cache is cold
 after every container replacement, which a stop-start deploy does on every
 release.
+
+## R2 buckets — required setup for production
+
+Three buckets, three tokens, each token scoped to exactly one bucket
+(**Object Read & Write on the specific bucket**, never an account-wide token).
+A leak of any one credential then exposes one bucket, not the estate:
+
+| Bucket | Access | Token env vars |
+| --- | --- | --- |
+| `jimmys-cms-masters` | fully private | `R2_ACCESS_KEY_ID_MASTERS` / `R2_SECRET_ACCESS_KEY_MASTERS` |
+| `jimmys-cms-media` | public via custom domain only | `R2_ACCESS_KEY_ID_MEDIA` / `R2_SECRET_ACCESS_KEY_MEDIA` |
+| `jimmys-cms-backups` | fully private | `R2_ACCESS_KEY_ID_BACKUPS` / `R2_SECRET_ACCESS_KEY_BACKUPS` |
+
+Checklist in the Cloudflare dashboard:
+
+1. **CORS on the masters bucket** — without this, every browser upload fails,
+   because the presigned PUT from `/admin/media` is a cross-origin request:
+
+   ```json
+   [
+     {
+       "AllowedOrigins": ["https://cms.jwwang.ca", "http://localhost:3000"],
+       "AllowedMethods": ["PUT"],
+       "AllowedHeaders": ["Content-Type"],
+       "MaxAgeSeconds": 3600
+     }
+   ]
+   ```
+
+2. **Media bucket**: connect the custom domain (`media.jwwang.ca`) and leave
+   the `*.r2.dev` development URL **disabled**. The custom domain rides
+   Cloudflare's CDN and respects the long-lived cache headers the publish
+   pipeline sets; r2.dev does neither.
+3. **Masters + backups buckets**: no public access, no custom domain, r2.dev
+   disabled. Masters are reached only through the app's short-lived presigned
+   URLs; backups only by litestream.
+4. The app itself never needs an account-level R2 API token, and no R2
+   credential is ever exposed to the browser — uploads get a signed URL, reads
+   go through the public media domain or a signed redirect.
+
+## Seeding the production catalog
+
+A fresh volume starts as an empty database (migrations run at boot). To carry
+over the locally-built catalog instead of re-importing spreadsheets:
+
+```bash
+# from the repo on your machine
+scp sqlite.db web-droplet-0:/tmp/sqlite.db
+ssh web-droplet-0
+docker compose -f /opt/jimmys-cms/docker-compose.yml stop cms
+docker run --rm -v jimmys-cms_cms-data:/data -v /tmp:/src alpine \
+  sh -c 'cp /src/sqlite.db /data/sqlite.db && chown 1001:1001 /data/sqlite.db'
+rm /tmp/sqlite.db
+docker compose -f /opt/jimmys-cms/docker-compose.yml start cms
+```
+
+(`1001` is the `nextjs` user the container runs as.)
+
+**The copied file carries your local accounts**, including the dev admin's
+password hash — `ADMIN_PASSWORD` in the droplet `.env` only applies when the
+admin row is first created. After seeding, drop the dev admin so it is
+re-bootstrapped from the production secret on next login:
+
+```bash
+docker compose exec cms node -e "const db=require('better-sqlite3')(process.env.SQLITE_URL); console.log(db.prepare(\"delete from user where username='admin'\").run())"
+```

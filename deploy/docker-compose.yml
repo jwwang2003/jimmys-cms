@@ -43,6 +43,10 @@ services:
     image: litestream/litestream:0.3
     container_name: jimmys-cms-litestream
     restart: unless-stopped
+    # Enabled by setting COMPOSE_PROFILES=backup in /opt/jimmys-cms/.env once
+    # the backups bucket + token exist. Without the profile, `docker compose
+    # up -d` skips this service instead of crash-looping on empty credentials.
+    profiles: ["backup"]
     depends_on:
       - cms
     env_file:

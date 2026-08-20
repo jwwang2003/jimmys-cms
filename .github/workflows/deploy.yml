@@ -106,13 +106,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Copy compose file to droplet
+      - name: Copy compose + litestream config to droplet
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          source: deploy/docker-compose.yml
+          source: deploy/docker-compose.yml,deploy/litestream.yml
           target: /opt/jimmys-cms
           strip_components: 1
 
@@ -138,8 +138,10 @@ jobs:
             sed -i '/^IMAGE=/d;/^IMAGE_TAG=/d' .env
             printf 'IMAGE=%s\nIMAGE_TAG=%s\n' "$IMAGE" "$IMAGE_TAG" >> .env
 
-            docker compose pull cms
-            docker compose up -d --remove-orphans cms
+            # Pulls and starts every enabled service: cms always, litestream
+            # once COMPOSE_PROFILES=backup is set in the droplet's .env.
+            docker compose pull
+            docker compose up -d --remove-orphans
 
             # Wait for the container to report healthy, else roll back.
             status=starting
