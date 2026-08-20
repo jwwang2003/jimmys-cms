@@ -211,7 +211,18 @@ function matchAssetForRow(row: ParsedMetadataRow, index: ReturnType<typeof build
         // rather than metadata silently written onto the wrong work.
         const candidates = index.byLeadingId.get(external);
         if (candidates?.length === 1) return { asset: candidates[0] };
-        if (candidates && candidates.length > 1) return { asset: null, ambiguous: candidates };
+        if (candidates && candidates.length > 1) {
+            // A composite scan (`016-020+…jpg`) and an individual crop
+            // (`016.jpg`) both claim the ids in the range, but only the crop is
+            // that one work — the composite is the sheet it was cut from. Where
+            // exactly one candidate is single-work, it wins; anything else is a
+            // real ambiguity and stays unresolved.
+            const singleWork = candidates.filter(
+                (candidate) => leadingIdsFromFilename(basename(candidate.objectKey)).length === 1
+            );
+            if (singleWork.length === 1) return { asset: singleWork[0] };
+            return { asset: null, ambiguous: candidates };
+        }
     }
     return { asset: null };
 }
