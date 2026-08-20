@@ -1,0 +1,25 @@
+# Lives at /opt/jimmys-cms/litestream.yml, mounted read-only into the
+# litestream container. See DOCUMENTATION/cms-plan.md §5.3.
+#
+# The SQLite catalog is the one piece of state a container replacement cannot
+# rebuild. Litestream ships the WAL continuously, so a restore lands within
+# seconds of the failure rather than at the last snapshot.
+
+dbs:
+  - path: /data/sqlite.db
+    replicas:
+      # R2 speaks the S3 API, so this is the s3 replica type pointed at the
+      # account endpoint. Uses its own bucket, not the media bucket: backups are
+      # private and must not sit behind a public custom domain.
+      - type: s3
+        endpoint: ${R2_ENDPOINT}
+        bucket: ${R2_BUCKET_BACKUPS}
+        path: sqlite
+        region: auto
+        access-key-id: ${R2_ACCESS_KEY_ID_BACKUPS}
+        secret-access-key: ${R2_SECRET_ACCESS_KEY_BACKUPS}
+        # Keep a day of WAL segments so a restore can target a point in time
+        # rather than only the newest snapshot.
+        retention: 168h
+        snapshot-interval: 24h
+        validation-interval: 12h

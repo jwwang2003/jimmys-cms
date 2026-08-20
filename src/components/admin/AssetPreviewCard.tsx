@@ -4,9 +4,11 @@ export function AssetPreviewCard({
   asset,
 }: {
   asset: {
+    id?: number;
     title: string;
     media_type: string;
     object_url?: string | null;
+    thumbnail_url?: string | null;
     object_key: string;
     filename?: string | null;
     tags?: string[];
@@ -14,6 +16,10 @@ export function AssetPreviewCard({
   };
 }) {
   const missing = asset.integrity_status === "missing";
+  // The master is private, so only the derived rendition is actually loadable
+  // in a browser. object_url stays as the "open original" link, which is a
+  // different thing from an inline preview.
+  const previewSrc = asset.thumbnail_url || asset.object_url;
 
   return (
     <Paper
@@ -44,9 +50,9 @@ export function AssetPreviewCard({
           </Alert>
         )}
 
-        {asset.object_url && asset.media_type === "image" && (
+        {previewSrc && asset.media_type === "image" && (
           <AspectRatio ratio={4 / 3}>
-            <Image src={asset.object_url} alt={asset.title} fit="contain" radius="md" />
+            <Image src={previewSrc} alt={asset.title} fit="contain" radius="md" />
           </AspectRatio>
         )}
 
@@ -67,8 +73,13 @@ export function AssetPreviewCard({
           </Alert>
         )}
 
-        {asset.object_url && (
-          <Anchor href={asset.object_url} target="_blank" rel="noreferrer">
+        {/*
+          Routed through the app rather than linked straight at object_url: the
+          masters bucket is private, so a direct link returns an R2
+          authorization error. The route signs a short-lived URL and redirects.
+        */}
+        {asset.id != null && (
+          <Anchor href={`/api/admin/media/${asset.id}/original`} target="_blank" rel="noreferrer">
             Open original file
           </Anchor>
         )}

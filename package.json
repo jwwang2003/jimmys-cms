@@ -15,10 +15,15 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "storage:sync": "node scripts/sync-storage.js",
+    "spreadsheet:import": "node scripts/import-spreadsheet.js",
+    "derive": "node scripts/derive.js",
+    "publish:catalog": "node scripts/publish.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.888.0",
+    "@aws-sdk/client-s3": "^3.1114.0",
+    "@aws-sdk/s3-request-presigner": "^3.1114.0",
     "@emotion/cache": "^11.14.0",
     "@emotion/react": "^11.14.0",
     "@mantine/carousel": "^8.3.0",
@@ -49,6 +54,7 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "recharts": "^3.2.0",
+    "sharp": "^0.35.3",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
@@ -75,17 +81,6 @@
     "tailwindcss": "^4",
     "ts-node": "^10.9.2",
     "typescript": "^5"
-  },
-  "pnpm": {
-    "ignoredBuiltDependencies": [
-      "esbuild"
-    ],
-    "onlyBuiltDependencies": [
-      "@tailwindcss/oxide",
-      "better-sqlite3",
-      "sharp",
-      "unrs-resolver"
-    ]
   },
   "packageManager": "pnpm@10.20.0+sha512.cf9998222162dd85864d0a8102e7892e7ba4ceadebbf5a31f9c2fce48dfce317a9c53b9f6464d1ef9042cba2e02ae02a9f7c143a2b438cd93c91840f0192b9dd"
 }

@@ -1,0 +1,14 @@
+# deploy/Caddyfile — the fresh-box alternative to deploy/nginx/cms.conf.
+# The real droplet (do0) runs nginx + certbot, which own ports 80/443; use this
+# only on a box where Caddy is the reverse proxy.
+#
+# Every portal hostname is served directly. Sessions are per-domain (different
+# registrable domains cannot share a cookie), so each portal carries its own
+# independent login — the accepted tradeoff of multi-portal serving.
+# Adding portal N+1: append the hostname to the address line (Caddy provisions
+# its certificate automatically) and add https://cms.<new-domain> to
+# AUTH_TRUSTED_ORIGINS in the app's .env.
+cms.jwwang.ca, cms.glorialan.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3000
+}

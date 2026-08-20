@@ -85,6 +85,8 @@ export function createBatchIngestJob(input: {
     spreadsheetFileName: string;
     createdBy?: string | null;
     files: Array<{ fileName: string; mimeType?: string | null }>;
+    /** Job kind. Free text on the row, so a new mode needs no migration. */
+    mode?: string;
 }) {
     const timestamp = now();
     const createdBy = resolveCreatedByUserId(input.createdBy);
@@ -92,7 +94,7 @@ export function createBatchIngestJob(input: {
         .insert(mediaIngestJobs)
         .values({
             status: "queued",
-            mode: "batch_upload",
+            mode: input.mode || "batch_upload",
             spreadsheetFilename: input.spreadsheetFileName,
             totalItems: input.files.length,
             processedItems: 0,
@@ -465,4 +467,134 @@ export function readBatchIngestJob(jobId: number) {
 export function isBatchIngestJobTerminal(jobId: number) {
     const snapshot = getBatchIngestJobSnapshot(jobId);
     return isTerminalJobStatus(snapshot.job.status);
+}
+
+// ------------------------------------------------------------- derive jobs
+
+/**
+ * Derivative generation as a tracked job (plan §4).
+ *
+ * Reuses the batch-ingest machinery rather than growing a parallel one: the
+ * item table, the progress recalculation and the SSE stream already model
+ * "long-running, per-item, resumable-looking work", which is exactly what a
+ * derive run is. Only the per-item body differs.
+ */
+export function createDeriveJob(input: {
+    targets: Array<{ assetId: number; objectKey: string; uid: string }>;
+    createdBy?: string | null;
+}) {
+    return createBatchIngestJob({
+        mode: "derive",
+        spreadsheetFileName: `derive:${input.targets.length} asset(s)`,
+        createdBy: input.createdBy,
+        files: input.targets.map((target) => ({
+            fileName: target.objectKey.split("/").pop() || target.objectKey,
+            mimeType: null,
+        })),
+    });
+}
+
+async function runDeriveJob(input: {
+    jobId: number;
+    targets: Array<{
+        assetId: number;
+        objectKey: string;
+        uid: string;
+        declaredWidth?: number | null;
+        declaredHeight?: number | null;
+    }>;
+    applyDimensions?: boolean;
+    measureOnly?: boolean;
+}) {
+    const timestamp = now();
+    db.update(mediaIngestJobs)
+        .set({ status: "running", startedAt: timestamp, updatedAt: timestamp })
+        .where(eq(mediaIngestJobs.id, input.jobId))
+        .run();
+
+    // Imported here rather than at module scope: derive-run pulls in sharp,
+    // which is a heavy native dependency that the batch-upload path never needs.
+    const { runDerive } = await import("./derive-run");
+
+    const summary = await runDerive({
+        targets: input.targets,
+        applyDimensions: input.applyDimensions,
+        measureOnly: input.measureOnly,
+        onProgress: (done, _total, target) => {
+            const index = done - 1;
+            updateBatchIngestJobItem(input.jobId, index, {
+                status: "uploading",
+                progressPercent: 10,
+                assetId: target.assetId,
+                storedObjectKey: target.objectKey,
+            });
+        },
+    });
+
+    summary.outcomes.forEach((outcome, index) => {
+        if (outcome.error) {
+            updateBatchIngestJobItem(input.jobId, index, {
+                status: "failed",
+                progressPercent: 100,
+                errorMessage: outcome.error,
+            });
+            return;
+        }
+        updateBatchIngestJobItem(input.jobId, index, {
+            // A skipped dimension write is a warning, not a failure: the
+            // renditions were still produced, and the conflict wants a human.
+            status: outcome.skipped ? "warning" : "completed",
+            progressPercent: 100,
+            assetId: outcome.assetId,
+            warningMessage: outcome.skipped || null,
+            detail: {
+                renditions: outcome.renditions,
+                uploaded: outcome.uploaded,
+                measured: outcome.measured,
+            },
+        });
+    });
+
+    finalizeBatchIngestJob(input.jobId, {
+        status: summary.failed > 0 && summary.processed === 0 ? "failed" : "completed",
+        summary: {
+            processed: summary.processed,
+            failed: summary.failed,
+            renditionsWritten: summary.renditionsWritten,
+            objectsUploaded: summary.objectsUploaded,
+            dimensionsApplied: summary.dimensionsApplied,
+            dimensionDiffs: summary.dimensionDiffs,
+        },
+    });
+
+    return summary;
+}
+
+export async function createAndRunDeriveJob(input: {
+    targets: Array<{
+        assetId: number;
+        objectKey: string;
+        uid: string;
+        declaredWidth?: number | null;
+        declaredHeight?: number | null;
+    }>;
+    applyDimensions?: boolean;
+    measureOnly?: boolean;
+    createdBy?: string | null;
+}) {
+    const job = createDeriveJob({ targets: input.targets, createdBy: input.createdBy });
+
+    void runDeriveJob({
+        jobId: job.id,
+        targets: input.targets,
+        applyDimensions: input.applyDimensions,
+        measureOnly: input.measureOnly,
+    }).catch((error) => {
+        finalizeBatchIngestJob(job.id, {
+            status: "failed",
+            errorMessage: error instanceof Error ? error.message : "Derive job failed",
+        });
+    });
+
+    return job;
 }

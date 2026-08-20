@@ -21,6 +21,7 @@ import {
     photoCameras,
     photoExif,
     photoLenses,
+    mediaRenditions,
     storageObjects,
     tags,
 } from "@/db/schema/schema";
@@ -47,6 +48,7 @@ type RawAssetRecord = {
     object_key: string;
     filename: string | null;
     object_url: string | null;
+    thumbnail_url: string | null;
     mime_type: string | null;
     size_bytes: number;
     status: "draft" | "review" | "published" | "archived";
@@ -192,6 +194,7 @@ const assetListSelect = {
     object_key: mediaAssets.objectKey,
     filename: mediaAssets.filename,
     object_url: mediaAssets.objectUrl,
+    thumbnail_url: mediaAssets.thumbnailUrl,
     mime_type: mediaAssets.mimeType,
     size_bytes: mediaAssets.sizeBytes,
     status: mediaAssets.status,
@@ -386,6 +389,7 @@ export function getMediaAssetById(id: number) {
             object_key: mediaAssets.objectKey,
             filename: mediaAssets.filename,
             object_url: mediaAssets.objectUrl,
+            thumbnail_url: mediaAssets.thumbnailUrl,
             mime_type: mediaAssets.mimeType,
             size_bytes: mediaAssets.sizeBytes,
             status: mediaAssets.status,
@@ -1501,4 +1505,116 @@ export function updateMediaAsset(assetId: number, input: AssetUpdateInput) {
     }
 
     return getMediaAssetById(assetId);
+}
+
+// ---------------------------------------------------------------- renditions
+
+export type RenditionInput = {
+    label: string;
+    objectKey: string;
+    objectUrl?: string | null;
+    mimeType?: string | null;
+    width?: number | null;
+    height?: number | null;
+    sizeBytes?: number | null;
+};
+
+/**
+ * Replace an asset's rendition rows with exactly the set given.
+ *
+ * Delete-then-insert rather than upsert: a re-derive at different widths must
+ * not leave rows describing objects the new run did not write. The unique index
+ * is on (asset_id, label), so a stale `avif-2400` from an earlier run would
+ * otherwise survive and point at an object that is no longer there.
+ */
+export function replaceAssetRenditions(assetId: number, renditions: RenditionInput[]) {
+    // Drizzle runs the callback immediately and returns its result; it is not a
+    // factory like better-sqlite3's own `.transaction()`.
+    db.transaction((tx) => {
+        tx.delete(mediaRenditions).where(eq(mediaRenditions.assetId, assetId)).run();
+        for (const rendition of renditions) {
+            tx.insert(mediaRenditions)
+                .values({
+                    assetId,
+                    label: rendition.label,
+                    objectKey: rendition.objectKey,
+                    objectUrl: rendition.objectUrl ?? null,
+                    mimeType: rendition.mimeType ?? null,
+                    width: rendition.width ?? null,
+                    height: rendition.height ?? null,
+                    sizeBytes: rendition.sizeBytes ?? 0,
+                })
+                .run();
+        }
+    });
+    return renditions.length;
+}
+
+export function listAssetRenditions(assetId: number) {
+    return db
+        .select()
+        .from(mediaRenditions)
+        .where(eq(mediaRenditions.assetId, assetId))
+        .orderBy(asc(mediaRenditions.label))
+        .all();
+}
+
+export function countAssetRenditions() {
+    return db.select({ value: count() }).from(mediaRenditions).get()?.value ?? 0;
+}
+
+/**
+ * Record measured intrinsic dimensions.
+ *
+ * Kept separate from the derive run itself because the plan requires the
+ * measured-vs-declared diff to be reviewed rather than silently applied: a
+ * mismatch can mean the master is not the file the catalog believes it is, and
+ * overwriting on sight would erase the evidence.
+ */
+export function setAssetMeasuredDimensions(assetId: number, width: number, height: number) {
+    db.update(mediaAssets)
+        .set({ width, height, updatedAt: new Date() })
+        .where(eq(mediaAssets.id, assetId))
+        .run();
+}
+
+export function setAssetLqip(assetId: number, lqip: string) {
+    const current = db
+        .select({ metadataJson: mediaAssets.metadataJson })
+        .from(mediaAssets)
+        .where(eq(mediaAssets.id, assetId))
+        .get();
+    if (!current) return;
+
+    let metadata: Record<string, unknown> = {};
+    try {
+        const parsed = JSON.parse(current.metadataJson || "{}");
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            metadata = parsed as Record<string, unknown>;
+        }
+    } catch {
+        // Unparseable metadata is replaced rather than allowed to block the write.
+    }
+
+    metadata.lqip = lqip;
+    db.update(mediaAssets)
+        .set({ metadataJson: JSON.stringify(metadata), updatedAt: new Date() })
+        .where(eq(mediaAssets.id, assetId))
+        .run();
+}
+
+/**
+ * Point the asset at a public thumbnail.
+ *
+ * The admin UI renders previews from `object_url`, which for these assets is
+ * the master in a private bucket — the browser has no credentials, so every
+ * preview is a broken image. The derived renditions are public, so the smallest
+ * one is what the UI should actually load: correct, and a few KB instead of
+ * tens of MB.
+ */
+export function setAssetThumbnail(assetId: number, objectKey: string, objectUrl: string | null) {
+    db.update(mediaAssets)
+        .set({ thumbnailKey: objectKey, thumbnailUrl: objectUrl, updatedAt: now() })
+        .where(eq(mediaAssets.id, assetId))
+        .run();
 }

@@ -19,7 +19,10 @@ export async function GET(request: Request) {
         query: searchParams.get("query") || "",
         mediaType: searchParams.get("mediaType") || "all",
         status: searchParams.get("status") || "all",
-        visibility: searchParams.get("visibility") || "all",
+        // Guests browse read-only, but read-only is not "read everything":
+        // anyone can mint a guest session from /login, so non-editors are
+        // pinned to public assets no matter what the query string asks for.
+        visibility: canEdit(session.role) ? searchParams.get("visibility") || "all" : "public",
     });
 
     return NextResponse.json({ assets, role: session.role });
@@ -40,7 +43,7 @@ export async function POST(request: Request) {
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     const asset = await uploadMediaAsset({
-        storageId: String(form.get("storageId") || "default"),
+        storageId: String(form.get("storageId") || "masters"),
         prefix: (String(form.get("prefix") || "media") as "content" | "media" | "public" | "meta"),
         path: String(form.get("path") || ""),
         fileName: file.name,

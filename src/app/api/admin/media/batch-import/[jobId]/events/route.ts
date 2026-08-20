@@ -6,10 +6,7 @@ export const runtime = "nodejs";
 
 function getJobId(raw: string) {
     const jobId = Number(raw);
-    if (!Number.isFinite(jobId)) {
-        throw new Error("Invalid batch ingest job id");
-    }
-    return jobId;
+    return Number.isFinite(jobId) ? jobId : null;
 }
 
 function encodeSseEvent(name: string, payload: unknown) {
@@ -27,11 +24,26 @@ export async function GET(_request: Request, context: { params: Promise<{ jobId:
 
     const { jobId: rawJobId } = await context.params;
     const jobId = getJobId(rawJobId);
+    if (jobId === null) {
+        return new Response("Invalid batch ingest job id", { status: 400 });
+    }
     const encoder = new TextEncoder();
+
+    // Timer teardown must live in cancel(): the Streams API ignores start()'s
+    // return value, so cleanup returned from there never runs and every
+    // disconnected client would leave its intervals firing for the life of
+    // the process.
+    let closed = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    let ping: ReturnType<typeof setInterval> | undefined;
+    const stop = () => {
+        closed = true;
+        if (interval) clearInterval(interval);
+        if (ping) clearInterval(ping);
+    };
 
     const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-            let closed = false;
             let previousPayload = "";
 
             const emitSnapshot = (eventName = "job") => {
@@ -44,8 +56,8 @@ export async function GET(_request: Request, context: { params: Promise<{ jobId:
 
                 if (isBatchIngestJobTerminal(jobId)) {
                     controller.enqueue(encoder.encode(encodeSseEvent("complete", snapshot)));
+                    stop();
                     controller.close();
-                    closed = true;
                     return true;
                 }
                 return false;
@@ -53,12 +65,10 @@ export async function GET(_request: Request, context: { params: Promise<{ jobId:
 
             emitSnapshot("snapshot");
 
-            const interval = setInterval(() => {
+            interval = setInterval(() => {
                 if (closed) return;
                 try {
-                    if (emitSnapshot("job")) {
-                        clearInterval(interval);
-                    }
+                    emitSnapshot("job");
                 } catch (error) {
                     controller.enqueue(
                         encoder.encode(
@@ -67,24 +77,18 @@ export async function GET(_request: Request, context: { params: Promise<{ jobId:
                             })
                         )
                     );
-                    clearInterval(interval);
+                    stop();
                     controller.close();
-                    closed = true;
                 }
             }, 500);
 
-            const ping = setInterval(() => {
+            ping = setInterval(() => {
                 if (closed) return;
                 controller.enqueue(encoder.encode(": keep-alive\n\n"));
             }, 15000);
-
-            return () => {
-                clearInterval(interval);
-                clearInterval(ping);
-            };
         },
         cancel() {
-            return undefined;
+            stop();
         },
     });
 

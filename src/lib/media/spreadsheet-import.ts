@@ -90,8 +90,36 @@ function stem(value: string) {
     return basename(value).replace(/\.[^.]+$/, "");
 }
 
-function buildAssetIndex(db: SpreadsheetDb) {
-    const assets = db
+/**
+ * Ids that lead a master filename, e.g. `074+西溪高庄+2023-05-01.JPG` -> ["74"],
+ * or the range form `004-009+watercolor shops+…jpg` -> ["4".."9"] where one
+ * scan holds several works.
+ *
+ * Deliberately separate from `parseBatchFilename`: that enforces the batch
+ * upload convention `<id>+<name>+YYYYMMDD.<ext>` and throws on anything else.
+ * The masters were named by hand with `YYYY-MM-DD` dates, so every one of them
+ * throws. Loosening the shared parser would weaken the convention it exists to
+ * enforce; this reads ids for indexing only.
+ */
+function leadingIdsFromFilename(fileName: string): string[] {
+    const range = fileName.match(/^(\d{1,4})-(\d{1,4})(?=[+._\-\s])/);
+    if (range) {
+        const start = Number(range[1]);
+        const end = Number(range[2]);
+        // A hyphen is also a plain separator (`011-global issue-2021-04-05.jpg`),
+        // so only treat it as a range when it reads as one.
+        if (end > start && end - start < 100) {
+            const ids: string[] = [];
+            for (let i = start; i <= end; i += 1) ids.push(String(i));
+            return ids;
+        }
+    }
+    const single = fileName.match(/^(\d{1,4})(?=[+._\-\s]|$)/);
+    return single ? [String(Number(single[1]))] : [];
+}
+
+function buildAssetIndex(db: SpreadsheetDb, options?: { keyPrefix?: string }) {
+    const allAssets = db
         .select({
             id: mediaAssets.id,
             title: mediaAssets.title,
@@ -102,14 +130,30 @@ function buildAssetIndex(db: SpreadsheetDb) {
         .from(mediaAssets)
         .all() as IndexedAsset[];
 
+    // Sheet ids restart at 1 per medium, so photography 001 and artwork 001 are
+    // different works that collide on every id-based lookup. Scoping the index
+    // to one subtree is what keeps a photography import off an artwork asset.
+    const keyPrefix = options?.keyPrefix?.toLocaleLowerCase();
+    const assets = keyPrefix
+        ? allAssets.filter((asset) => asset.objectKey.toLocaleLowerCase().startsWith(keyPrefix))
+        : allAssets;
+
     const byId = new Map<number, IndexedAsset>();
     const byObjectKey = new Map<string, IndexedAsset>();
     const byFileName = new Map<string, IndexedAsset>();
     const byStem = new Map<string, IndexedAsset>();
     const byExternalId = new Map<string, IndexedAsset>();
     const byFilenameId = new Map<string, IndexedAsset>();
+    // Arrays, not single values: two masters claiming one id is a naming fault
+    // that must surface, and last-write-wins would hide it.
+    const byLeadingId = new Map<string, IndexedAsset[]>();
 
     for (const asset of assets) {
+        for (const id of leadingIdsFromFilename(basename(asset.objectKey))) {
+            const bucket = byLeadingId.get(id);
+            if (bucket) bucket.push(asset);
+            else byLeadingId.set(id, [asset]);
+        }
         byId.set(asset.id, asset);
         byObjectKey.set(asset.objectKey.toLocaleLowerCase(), asset);
         byFileName.set(basename(asset.objectKey).toLocaleLowerCase(), asset);
@@ -131,35 +175,58 @@ function buildAssetIndex(db: SpreadsheetDb) {
         }
     }
 
-    return { byId, byObjectKey, byFileName, byStem, byExternalId, byFilenameId };
+    return { byId, byObjectKey, byFileName, byStem, byExternalId, byFilenameId, byLeadingId };
 }
 
-function findAssetForRow(row: ParsedMetadataRow, index: ReturnType<typeof buildAssetIndex>) {
+type MatchResult =
+    | { asset: IndexedAsset; ambiguous?: undefined }
+    | { asset: null; ambiguous?: IndexedAsset[] };
+
+function matchAssetForRow(row: ParsedMetadataRow, index: ReturnType<typeof buildAssetIndex>): MatchResult {
     if (row.assetId && index.byId.has(row.assetId)) {
-        return index.byId.get(row.assetId) || null;
+        return { asset: index.byId.get(row.assetId) || null };
     }
     if (row.objectKey) {
         const match = index.byObjectKey.get(row.objectKey.toLocaleLowerCase());
-        if (match) return match;
+        if (match) return { asset: match };
     }
     if (row.fileName) {
         const fileName = row.fileName.toLocaleLowerCase();
         const exact = index.byFileName.get(fileName);
-        if (exact) return exact;
-        const byStem = index.byStem.get(stem(fileName).toLocaleLowerCase());
-        if (byStem) return byStem;
+        if (exact) return { asset: exact };
+        const byStemMatch = index.byStem.get(stem(fileName).toLocaleLowerCase());
+        if (byStemMatch) return { asset: byStemMatch };
     }
     if (row.externalId) {
         const external = normalizeExternalId(row.externalId);
         const fromMetadata = index.byExternalId.get(external);
-        if (fromMetadata) return fromMetadata;
+        if (fromMetadata) return { asset: fromMetadata };
         const fromFilename = index.byFilenameId.get(external);
-        if (fromFilename) return fromFilename;
-        const byStem = index.byStem.get(external);
-        if (byStem) return byStem;
+        if (fromFilename) return { asset: fromFilename };
+        const byStemMatch = index.byStem.get(external);
+        if (byStemMatch) return { asset: byStemMatch };
+
+        // Last resort: the numeric id leading the master filename. Report a
+        // tie instead of picking, so a misnamed master is a visible failure
+        // rather than metadata silently written onto the wrong work.
+        const candidates = index.byLeadingId.get(external);
+        if (candidates?.length === 1) return { asset: candidates[0] };
+        if (candidates && candidates.length > 1) {
+            // A composite scan (`016-020+…jpg`) and an individual crop
+            // (`016.jpg`) both claim the ids in the range, but only the crop is
+            // that one work — the composite is the sheet it was cut from. Where
+            // exactly one candidate is single-work, it wins; anything else is a
+            // real ambiguity and stays unresolved.
+            const singleWork = candidates.filter(
+                (candidate) => leadingIdsFromFilename(basename(candidate.objectKey)).length === 1
+            );
+            if (singleWork.length === 1) return { asset: singleWork[0] };
+            return { asset: null, ambiguous: candidates };
+        }
     }
-    return null;
+    return { asset: null };
 }
+
 
 function readAssetTags(db: SpreadsheetDb, assetId: number) {
     return db
@@ -247,8 +314,17 @@ function ensureCollection(db: SpreadsheetDb, name: string) {
 
 function replaceAssetTags(db: SpreadsheetDb, assetId: number, tags: string[]) {
     db.delete(mediaTags).where(eq(mediaTags.assetId, assetId)).run();
+    // Dedupe on the resolved id, not the input string. Callers merge the tags
+    // already stored (which are slugs) with the spreadsheet's (which are
+    // labels), so "coffee-shop" and "coffee shop" arrive as distinct strings
+    // and survive a string-level dedupe, but ensureTag slugifies and hands back
+    // one id for both — a duplicate (asset_id, tag_id) and a primary key
+    // violation on every re-import.
+    const seen = new Set<number>();
     for (const tag of tags) {
         const tagId = ensureTag(db, tag);
+        if (seen.has(tagId)) continue;
+        seen.add(tagId);
         db.insert(mediaTags).values({ assetId, tagId, appliedAt: now() }).run();
     }
 }
@@ -584,9 +660,16 @@ function updateAssetMetadataJson(db: SpreadsheetDb, assetId: number, row: Parsed
         .run();
 }
 
-function updateAssetBasics(db: SpreadsheetDb, asset: IndexedAsset, row: ParsedMetadataRow, options?: AppliedMetadataOptions) {
-    if (!row.title && !row.description && !options?.titleOverride) return;
+/**
+ * A title the storage sync invented from the master's filename, e.g.
+ * `001+Casamar+2019 04 19` or `016-020+watercolor shops+2021 07 25`. These are
+ * placeholders, not authored titles, and they are safe to replace.
+ */
+function looksFilenameDerived(title: string) {
+    return /^\d{1,4}[-+]/.test(title.trim());
+}
 
+function updateAssetBasics(db: SpreadsheetDb, asset: IndexedAsset, row: ParsedMetadataRow, options?: AppliedMetadataOptions) {
     const current = db
         .select({ title: mediaAssets.title, description: mediaAssets.description })
         .from(mediaAssets)
@@ -594,13 +677,26 @@ function updateAssetBasics(db: SpreadsheetDb, asset: IndexedAsset, row: ParsedMe
         .get();
     if (!current) return;
 
-    const nextTitle = options?.titleOverride?.trim() || row.title?.trim() || current.title;
+    // Neither spreadsheet has a title column, so an asset synced from storage
+    // keeps its filename-derived placeholder unless something supplies a better
+    // one. The place, then the city, is what the published catalog should show
+    // — and is what the site's own catalog uses.
+    const derivedTitle = looksFilenameDerived(current.title)
+        ? row.locationLabel?.trim() || row.city?.trim() || ""
+        : "";
+
+    const nextTitle = options?.titleOverride?.trim() || row.title?.trim() || derivedTitle || current.title;
     const nextDescription = row.description?.trim() || current.description;
+
+    if (nextTitle === current.title && (nextDescription || null) === current.description) return;
 
     db.update(mediaAssets)
         .set({
             title: nextTitle,
-            slug: buildUniqueSlug(db, nextTitle, asset.id),
+            // The slug deliberately does not follow the title. It is the asset's
+            // public identity: rendition keys are built from it and published
+            // under a one-year immutable cache, so re-slugging on a title
+            // correction would orphan every derivative the asset already has.
             description: nextDescription || null,
             updatedAt: now(),
         })
@@ -610,28 +706,60 @@ function updateAssetBasics(db: SpreadsheetDb, asset: IndexedAsset, row: ParsedMe
 
 export async function importMediaSpreadsheetIntoDb(
     dbInput: SpreadsheetDb | RawSpreadsheetDb,
-    input: { fileName: string; bytes: Buffer | Uint8Array }
+    input: {
+        fileName: string;
+        bytes: Buffer | Uint8Array;
+        /**
+         * Restrict matching to assets whose object key starts with this prefix.
+         * Sheet ids restart at 1 per medium, so an unscoped import of the
+         * photography sheet can land on an artwork asset holding the same id.
+         */
+        keyPrefix?: string;
+        /** Report what would change without writing. */
+        dryRun?: boolean;
+    }
 ) {
     const db = ensureDrizzleDb(dbInput);
     const parsed = parseMetadataSpreadsheet(input);
     const summary = {
         fileName: input.fileName,
+        keyPrefix: input.keyPrefix || null,
         rows: parsed.rows.length,
         imported: 0,
         unmatched: 0,
+        ambiguous: 0,
         geocoded: 0,
         pending: 0,
         failed: 0,
         updatedTags: 0,
         updatedCollections: 0,
+        // Rows that did not resolve to exactly one asset, with enough context to
+        // act on. A bare count is not actionable at cutover.
+        unresolved: [] as Array<{
+            externalId: string | null;
+            reason: "unmatched" | "ambiguous";
+            candidates?: string[];
+        }>,
     };
 
-    const index = buildAssetIndex(db);
+    const index = buildAssetIndex(db, { keyPrefix: input.keyPrefix });
 
     for (const row of parsed.rows) {
-        const asset = findAssetForRow(row, index);
+        const match = matchAssetForRow(row, index);
+        const asset = match.asset;
         if (!asset) {
-            summary.unmatched += 1;
+            const ambiguous = (match.ambiguous?.length ?? 0) > 0;
+            if (ambiguous) summary.ambiguous += 1;
+            else summary.unmatched += 1;
+            summary.unresolved.push({
+                externalId: row.externalId,
+                reason: ambiguous ? "ambiguous" : "unmatched",
+                ...(ambiguous ? { candidates: match.ambiguous!.map((a) => a.objectKey) } : {}),
+            });
+            continue;
+        }
+        if (input.dryRun) {
+            summary.imported += 1;
             continue;
         }
 

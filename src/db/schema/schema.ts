@@ -70,6 +70,24 @@ export const mediaAssets = sqliteTable(
         })
             .default("image")
             .notNull(),
+        /**
+         * Medium of the work, as distinct from `media_type`, which describes
+         * the file. A photograph and a painting are both `image`.
+         *
+         * A column rather than an attribute or a collection because it
+         * partitions the catalog — the site publishes photography and artwork
+         * as separate artifacts to separate pages — and because deriving it
+         * from the object key would break the moment a prefix is renamed.
+         *
+         * `support` covers site chrome (series covers, reference photos, the
+         * about portrait): catalogued so storage stays reconciled, never
+         * published.
+         */
+        kind: text("kind", {
+            enum: ["photography", "artwork", "support"],
+        })
+            .default("support")
+            .notNull(),
         storageId: text("storage_id")
             .notNull()
             .references(() => storageLocations.id, { onDelete: "restrict" }),
@@ -85,6 +103,16 @@ export const mediaAssets = sqliteTable(
         width: integer("width"),
         height: integer("height"),
         checksum: text("checksum"),
+        // Materialised geography. The map facets on these on every page, and
+        // media_attributes (EAV) is the wrong shape for a query that hot: it
+        // costs a join and a row-per-attribute scan where a column costs an
+        // index seek. Derived from geocoding, not authored directly.
+        countryCode: text("country_code"),
+        regionCode: text("region_code"),
+        // Hash of the asset's semantic fields. An artifact is stale exactly
+        // when one of its contributing hashes changed, which is what lets the
+        // publish step diff instead of rewriting everything.
+        contentHash: text("content_hash"),
         status: text("status", {
             enum: ["draft", "review", "published", "archived"],
         })
@@ -126,6 +154,10 @@ export const mediaAssets = sqliteTable(
         index("media_assets_lifecycle_idx").on(table.lifecycleStatus),
         index("media_assets_integrity_idx").on(table.integrityStatus),
         index("media_assets_published_idx").on(table.publishedAt),
+        index("media_assets_kind_idx").on(table.kind),
+        index("media_assets_country_idx").on(table.countryCode),
+        index("media_assets_region_idx").on(table.regionCode),
+        index("media_assets_content_hash_idx").on(table.contentHash),
         check(
             "media_assets_lifecycle_status_check",
             sql`${table.lifecycleStatus} in ('active', 'trashed')`
@@ -325,7 +357,9 @@ export const collections = sqliteTable(
         id: integer("id").primaryKey({ autoIncrement: true }),
         title: text("title").notNull(),
         slug: text("slug").notNull(),
-        kind: text("kind", { enum: ["album", "collection"] })
+        // `series` is a curated, ordered run of artworks that the site routes
+        // to by slug — distinct from an album or an ad-hoc collection.
+        kind: text("kind", { enum: ["album", "collection", "series"] })
             .default("collection")
             .notNull(),
         description: text("description"),
@@ -513,5 +547,42 @@ export const collectionAssets = sqliteTable(
             columns: [table.collectionId, table.assetId],
         }),
         index("collection_assets_position_idx").on(table.collectionId, table.position),
+    ]
+);
+
+/**
+ * Build ledger: which artifact, at which content hash, currently lives at which
+ * object key (cms-plan.md §6).
+ *
+ * The artifact hash is sha256(GENERATOR_VERSION ‖ sorted contributing
+ * content_hashes) and carries no timestamp, because an artifact is stale
+ * exactly when its inputs changed — not when time passed. Publishing recomputes
+ * the hash, compares it against this row, and writes only on a mismatch.
+ */
+export const buildState = sqliteTable(
+    "build_state",
+    {
+        id: integer("id").primaryKey({ autoIncrement: true }),
+        /** Logical artifact name, e.g. "catalog" or "manifest". */
+        artifact: text("artifact").notNull(),
+        /** sha256 over the generator version and the contributing hashes. */
+        artifactHash: text("artifact_hash").notNull(),
+        /** Generator version the hash was computed under. */
+        generatorVersion: text("generator_version").notNull(),
+        /** Where the artifact was written. Content-hashed for everything but the manifest. */
+        objectKey: text("object_key").notNull(),
+        objectUrl: text("object_url"),
+        sizeBytes: integer("size_bytes").default(0).notNull(),
+        /** How many assets contributed, kept for reporting rather than correctness. */
+        itemCount: integer("item_count").default(0).notNull(),
+        builtAt: integer("built_at", { mode: "timestamp_ms" })
+            .default(timestamp())
+            .notNull(),
+    },
+    (table) => [
+        // One current row per artifact; history is the object store's job, not
+        // this table's.
+        uniqueIndex("build_state_artifact_unique").on(table.artifact),
+        index("build_state_hash_idx").on(table.artifactHash),
     ]
 );

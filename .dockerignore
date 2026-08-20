@@ -1,6 +1,14 @@
 .git
+.github
 .next
 node_modules
 __tests__
+coverage
+DOCUMENTATION
+deploy
+.worktrees
 *.log
-sqlite.db
+*.db
+.env
+.env.*
+!.env.example

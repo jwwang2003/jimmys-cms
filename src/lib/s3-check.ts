@@ -1,5 +1,3 @@
-"use server"
-
 import { HeadBucketCommand } from "@aws-sdk/client-s3";
 import { getS3, buckets, bucket as defaultBucket, region as defaultRegion } from "@/lib/s3";
 
@@ -20,7 +18,10 @@ export async function verifyS3OnStartup() {
     // Determine set of buckets to check; include default if present
     const entries = Object.entries(buckets);
     if (entries.length === 0 && defaultBucket) {
-        entries.push(["default", { name: defaultBucket, region: defaultRegion || "" }]);
+        entries.push([
+            "default",
+            { name: defaultBucket, region: defaultRegion || "", endpoint: "", forcePathStyle: false, cdnBaseUrl: "" },
+        ]);
     }
 
     if (entries.length === 0) {

@@ -13,8 +13,11 @@ export function verifyPassword(storedPassword: string, providedPassword: string)
         return providedPassword === "";
     }
 
+    // Anything not in scrypt form was never written by this app (both
+    // `ensureDefaultAdmin` and `registerUser` hash on the way in), so treat it
+    // as unusable rather than falling back to a plaintext comparison.
     if (!storedPassword.startsWith("scrypt$")) {
-        return storedPassword === providedPassword;
+        return false;
     }
 
     const [, salt, storedHash] = storedPassword.split("$");

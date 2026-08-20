@@ -18,7 +18,7 @@ export async function POST(request: Request) {
     try {
         const body = await request.json().catch(() => ({}));
         const summary = await syncS3Prefix({
-            storageId: String(body.storageId || "default"),
+            storageId: String(body.storageId || "masters"),
             prefix: (String(body.prefix || "media") as "content" | "media" | "public" | "meta"),
             path: String(body.path || ""),
             maxKeys: Number(body.maxKeys || 200),
