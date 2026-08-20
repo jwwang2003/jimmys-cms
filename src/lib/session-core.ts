@@ -11,7 +11,14 @@ export const SESSION_COOKIE_NAME = "cms_session";
 export const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 
 function getSessionSecret() {
-    return process.env.SESSION_SECRET || "dev-session-secret-change-me";
+    const secret = process.env.SESSION_SECRET;
+    if (secret) return secret;
+    // A shared default secret means anyone can mint a valid admin session.
+    // Tolerable locally, never in a deployed instance.
+    if (process.env.NODE_ENV === "production") {
+        throw new Error("SESSION_SECRET must be set in production");
+    }
+    return "dev-session-secret-change-me";
 }
 
 function base64UrlEncode(value: string | Uint8Array) {
