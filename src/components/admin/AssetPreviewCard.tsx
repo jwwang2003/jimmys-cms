@@ -4,6 +4,7 @@ export function AssetPreviewCard({
   asset,
 }: {
   asset: {
+    id?: number;
     title: string;
     media_type: string;
     object_url?: string | null;
@@ -72,8 +73,13 @@ export function AssetPreviewCard({
           </Alert>
         )}
 
-        {asset.object_url && (
-          <Anchor href={asset.object_url} target="_blank" rel="noreferrer">
+        {/*
+          Routed through the app rather than linked straight at object_url: the
+          masters bucket is private, so a direct link returns an R2
+          authorization error. The route signs a short-lived URL and redirects.
+        */}
+        {asset.id != null && (
+          <Anchor href={`/api/admin/media/${asset.id}/original`} target="_blank" rel="noreferrer">
             Open original file
           </Anchor>
         )}
