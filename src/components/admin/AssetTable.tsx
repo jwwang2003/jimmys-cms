@@ -12,6 +12,7 @@ type AssetRow = {
   filename?: string | null;
   media_type: string;
   object_url?: string | null;
+  thumbnail_url?: string | null;
   object_key: string;
   status: string;
   visibility: string;
@@ -28,10 +29,15 @@ function integrityColor(status: string) {
 }
 
 function AssetThumb({ asset }: { asset: AssetRow }) {
-  if (asset.object_url && asset.media_type === "image") {
+  // Prefer the derived thumbnail. The master sits in a private bucket the
+  // browser has no credentials for, so object_url renders as a broken image —
+  // and it is tens of MB where the rendition is a few KB.
+  const previewSrc = asset.thumbnail_url || asset.object_url;
+
+  if (previewSrc && asset.media_type === "image") {
     return (
       <AspectRatio ratio={1} w={84}>
-        <Image src={asset.object_url} alt={asset.title} radius="md" fit="cover" />
+        <Image src={previewSrc} alt={asset.title} radius="md" fit="cover" />
       </AspectRatio>
     );
   }

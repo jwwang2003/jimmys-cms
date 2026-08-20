@@ -7,6 +7,7 @@ export function AssetPreviewCard({
     title: string;
     media_type: string;
     object_url?: string | null;
+    thumbnail_url?: string | null;
     object_key: string;
     filename?: string | null;
     tags?: string[];
@@ -14,6 +15,10 @@ export function AssetPreviewCard({
   };
 }) {
   const missing = asset.integrity_status === "missing";
+  // The master is private, so only the derived rendition is actually loadable
+  // in a browser. object_url stays as the "open original" link, which is a
+  // different thing from an inline preview.
+  const previewSrc = asset.thumbnail_url || asset.object_url;
 
   return (
     <Paper
@@ -44,9 +49,9 @@ export function AssetPreviewCard({
           </Alert>
         )}
 
-        {asset.object_url && asset.media_type === "image" && (
+        {previewSrc && asset.media_type === "image" && (
           <AspectRatio ratio={4 / 3}>
-            <Image src={asset.object_url} alt={asset.title} fit="contain" radius="md" />
+            <Image src={previewSrc} alt={asset.title} fit="contain" radius="md" />
           </AspectRatio>
         )}
 

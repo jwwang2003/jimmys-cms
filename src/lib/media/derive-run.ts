@@ -6,6 +6,7 @@ import {
     replaceAssetRenditions,
     setAssetLqip,
     setAssetMeasuredDimensions,
+    setAssetThumbnail,
     type RenditionInput,
 } from "./repository";
 
@@ -172,6 +173,18 @@ export async function runDerive(input: {
                 replaceAssetRenditions(target.assetId, rows);
                 setAssetLqip(target.assetId, result.lqip);
                 summary.renditionsWritten += rows.length;
+
+                // Smallest WebP as the admin thumbnail: it is public, where the
+                // master is not, and a few KB rather than tens of MB. Falls back
+                // to the smallest rendition of any format if WebP is absent.
+                const thumbnail =
+                    rows
+                        .filter((row) => row.mimeType === "image/webp")
+                        .sort((a, b) => (a.width ?? 0) - (b.width ?? 0))[0] ??
+                    rows.sort((a, b) => (a.width ?? 0) - (b.width ?? 0))[0];
+                if (thumbnail) {
+                    setAssetThumbnail(target.assetId, thumbnail.objectKey, thumbnail.objectUrl ?? null);
+                }
 
                 if (!dimensionsConflict || input.applyDimensions) {
                     setAssetMeasuredDimensions(target.assetId, result.width, result.height);

@@ -48,6 +48,7 @@ type RawAssetRecord = {
     object_key: string;
     filename: string | null;
     object_url: string | null;
+    thumbnail_url: string | null;
     mime_type: string | null;
     size_bytes: number;
     status: "draft" | "review" | "published" | "archived";
@@ -193,6 +194,7 @@ const assetListSelect = {
     object_key: mediaAssets.objectKey,
     filename: mediaAssets.filename,
     object_url: mediaAssets.objectUrl,
+    thumbnail_url: mediaAssets.thumbnailUrl,
     mime_type: mediaAssets.mimeType,
     size_bytes: mediaAssets.sizeBytes,
     status: mediaAssets.status,
@@ -387,6 +389,7 @@ export function getMediaAssetById(id: number) {
             object_key: mediaAssets.objectKey,
             filename: mediaAssets.filename,
             object_url: mediaAssets.objectUrl,
+            thumbnail_url: mediaAssets.thumbnailUrl,
             mime_type: mediaAssets.mimeType,
             size_bytes: mediaAssets.sizeBytes,
             status: mediaAssets.status,
@@ -1596,6 +1599,22 @@ export function setAssetLqip(assetId: number, lqip: string) {
     metadata.lqip = lqip;
     db.update(mediaAssets)
         .set({ metadataJson: JSON.stringify(metadata), updatedAt: new Date() })
+        .where(eq(mediaAssets.id, assetId))
+        .run();
+}
+
+/**
+ * Point the asset at a public thumbnail.
+ *
+ * The admin UI renders previews from `object_url`, which for these assets is
+ * the master in a private bucket — the browser has no credentials, so every
+ * preview is a broken image. The derived renditions are public, so the smallest
+ * one is what the UI should actually load: correct, and a few KB instead of
+ * tens of MB.
+ */
+export function setAssetThumbnail(assetId: number, objectKey: string, objectUrl: string | null) {
+    db.update(mediaAssets)
+        .set({ thumbnailKey: objectKey, thumbnailUrl: objectUrl, updatedAt: now() })
         .where(eq(mediaAssets.id, assetId))
         .run();
 }
