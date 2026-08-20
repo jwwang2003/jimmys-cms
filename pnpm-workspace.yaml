@@ -1,0 +1,8 @@
+# Settings home for pnpm ≥10 (pnpm 11 no longer reads package.json#pnpm).
+# better-sqlite3 is the one dependency allowed to run its build script — it
+# compiles/downloads its native binding. Everything else stays blocked
+# (supply-chain protection); the other native deps (sharp, esbuild,
+# @tailwindcss/oxide, unrs-resolver) ship binaries as optionalDependencies
+# and need no scripts.
+onlyBuiltDependencies:
+  - better-sqlite3
