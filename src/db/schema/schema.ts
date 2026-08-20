@@ -70,6 +70,24 @@ export const mediaAssets = sqliteTable(
         })
             .default("image")
             .notNull(),
+        /**
+         * Medium of the work, as distinct from `media_type`, which describes
+         * the file. A photograph and a painting are both `image`.
+         *
+         * A column rather than an attribute or a collection because it
+         * partitions the catalog — the site publishes photography and artwork
+         * as separate artifacts to separate pages — and because deriving it
+         * from the object key would break the moment a prefix is renamed.
+         *
+         * `support` covers site chrome (series covers, reference photos, the
+         * about portrait): catalogued so storage stays reconciled, never
+         * published.
+         */
+        kind: text("kind", {
+            enum: ["photography", "artwork", "support"],
+        })
+            .default("support")
+            .notNull(),
         storageId: text("storage_id")
             .notNull()
             .references(() => storageLocations.id, { onDelete: "restrict" }),
@@ -136,6 +154,7 @@ export const mediaAssets = sqliteTable(
         index("media_assets_lifecycle_idx").on(table.lifecycleStatus),
         index("media_assets_integrity_idx").on(table.integrityStatus),
         index("media_assets_published_idx").on(table.publishedAt),
+        index("media_assets_kind_idx").on(table.kind),
         index("media_assets_country_idx").on(table.countryCode),
         index("media_assets_region_idx").on(table.regionCode),
         index("media_assets_content_hash_idx").on(table.contentHash),
