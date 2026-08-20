@@ -1,0 +1,30 @@
+# Lives at /opt/jimmys-cms/docker-compose.yml on the droplet.
+# The deploy workflow rewrites IMAGE_TAG in .env and runs `docker compose up -d`.
+services:
+  cms:
+    image: ${IMAGE}:${IMAGE_TAG:-latest}
+    container_name: jimmys-cms
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SQLITE_URL: /data/sqlite.db
+    volumes:
+      - cms-data:/data
+    # Bound to loopback: the reverse proxy terminates TLS and forwards here.
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  cms-data:

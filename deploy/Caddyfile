@@ -1,0 +1,13 @@
+# /etc/caddy/Caddyfile — TLS + reverse proxy in front of the container.
+#
+# One canonical hostname, per plan section 5.1: session cookies are per-domain,
+# so serving both names directly would mean two independent login states for one
+# admin panel. The redirect gives "both URLs work" with a single session domain.
+cms.jwwang.ca {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3000
+}
+
+cms.glorialan.com {
+    redir https://cms.jwwang.ca{uri} permanent
+}

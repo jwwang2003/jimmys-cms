@@ -1,0 +1,170 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: sha-${{ github.sha }}
+      image: ${{ steps.image.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR requires an all-lowercase path; owner names may not be.
+      - id: image
+        run: echo "ref=${REGISTRY}/${IMAGE_NAME,,}" >>"$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.ref }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build image (load locally for smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: cms:smoke
+          build-args: |
+            NEXT_PUBLIC_AUTH_BASE_URL=${{ vars.NEXT_PUBLIC_AUTH_BASE_URL }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Catches the classic failure modes before anything reaches the droplet:
+      # a missing better-sqlite3 native binding, or migrations that don't apply.
+      - name: Smoke test the image
+        run: |
+          docker run -d --name smoke -p 3000:3000 \
+            -e SESSION_SECRET=smoke-test-secret-value-not-used-anywhere \
+            cms:smoke
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/api/health; then ok=1; break; fi
+            sleep 2
+          done
+          if [ -z "$ok" ]; then echo "health check never passed"; docker logs smoke; exit 1; fi
+          docker rm -f smoke
+
+      - name: Push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_AUTH_BASE_URL=${{ vars.NEXT_PUBLIC_AUTH_BASE_URL }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy compose file to droplet
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          source: deploy/docker-compose.yml
+          target: /opt/jimmys-cms
+          strip_components: 1
+
+      - name: Pull new image and restart in place
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          envs: REGISTRY,IMAGE,IMAGE_TAG,GH_ACTOR,GH_TOKEN
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /opt/jimmys-cms
+
+            echo "$GH_TOKEN" | docker login "$REGISTRY" -u "$GH_ACTOR" --password-stdin
+
+            # Record the image being deployed, keeping the previous one for rollback.
+            if grep -q '^IMAGE_TAG=' .env 2>/dev/null; then
+              grep '^IMAGE_TAG=' .env | sed 's/^IMAGE_TAG=/PREVIOUS_IMAGE_TAG=/' > .env.previous
+            fi
+            touch .env
+            sed -i '/^IMAGE=/d;/^IMAGE_TAG=/d' .env
+            printf 'IMAGE=%s\nIMAGE_TAG=%s\n' "$IMAGE" "$IMAGE_TAG" >> .env
+
+            docker compose pull cms
+            docker compose up -d --remove-orphans cms
+
+            # Wait for the container to report healthy, else roll back.
+            status=starting
+            for i in $(seq 1 30); do
+              status=$(docker inspect -f '{{.State.Health.Status}}' jimmys-cms 2>/dev/null || echo starting)
+              if [ "$status" = "healthy" ]; then break; fi
+              sleep 3
+            done
+
+            if [ "$status" != "healthy" ]; then
+              echo "Deploy unhealthy; rolling back."
+              docker compose logs --tail=100 cms || true
+              if [ -f .env.previous ]; then
+                prev=$(sed 's/^PREVIOUS_IMAGE_TAG=//' .env.previous)
+                sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=$prev|" .env
+                docker compose up -d cms
+              fi
+              exit 1
+            fi
+
+            docker image prune -af --filter "until=168h"
+            docker logout "$REGISTRY"
+        env:
+          REGISTRY: ghcr.io
+          IMAGE: ${{ needs.build.outputs.image }}
+          IMAGE_TAG: ${{ needs.build.outputs.tag }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
