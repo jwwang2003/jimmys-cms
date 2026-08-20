@@ -165,3 +165,43 @@ Master files: 110 photography + 36 artwork + 9 support = 155 under
 `originals/`, matching the plan's §3 figure, plus 16 under `orphaned/`.
 
 **No unexplained rows remain.**
+
+---
+
+## Resolution (applied)
+
+Items 1 and 2 were fixed at the source rather than worked around, so the
+filenames now tell the truth and nothing downstream needs a special case:
+
+| Old key | New key |
+| --- | --- |
+| `Photography/074+西湖区+2023-05-01.JPG` | `Photography/075+西湖区+2023-05-01.JPG` |
+| `Photography/087+Venice+2023-07-22.jpeg` | `Photography/110+Venice+2023-07-22.jpeg` |
+
+Renamed in `assets-master` first, then uploaded to R2 and verified
+byte-for-byte — sha256 read back from the bucket — before the old keys were
+deleted. `extra-venice` takes id 110, the next free number.
+
+The Photography tree is now 110 files with 110 distinct ids: 001–110 complete,
+no duplicates, no gaps.
+
+Item 3 (photo 016's dropped tag) needed no action. The importer merges sheet
+tags into whatever the asset already carries, so both `coffee` and
+`coffee shop` are present.
+
+The artwork composite ties resolve automatically: where a single-work crop and
+the multi-work scan it was cut from both claim an id, the crop wins. Ids
+004–009 still resolve to the composite because no crops exist yet, and that
+remains the one artwork item that is not import-ready.
+
+### Import result
+
+| | Rows | Matched | Unresolved |
+| --- | --- | --- | --- |
+| Photography | 109 | 109 | 0 |
+| Artwork | 39 | 39 | 0 |
+
+155 `media_assets`, 171 `storage_objects`, 60 tags across 251 links, and 134
+`asset_locations` queued for geocoding (no Google Maps key is configured yet).
+
+`media_renditions` is still empty — that is §4.
