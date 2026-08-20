@@ -124,9 +124,10 @@ glorialan-media     (public-read via CloudFront)
 ### CDN — Cloudflare, not CloudFront *(revised 2026-08-19)*
 
 An earlier revision paired R2 with CloudFront, on the grounds that this repo
-already carries `CLOUDFRONT_DISTRIBUTION_ID` plumbing. **Superseded.** That
-plumbing is ~15 lines of env parsing in `src/lib/s3.ts`, legacy from when the CMS
-targeted AWS S3 — a variable name, not lock-in.
+already carried `CLOUDFRONT_DISTRIBUTION_ID` plumbing. **Superseded.** That
+plumbing was ~15 lines of env parsing in `src/lib/s3.ts`, legacy from when the
+CMS targeted AWS S3 — a variable name, not lock-in — and has since been
+deleted (2026-08-19) along with the unused bare S3 client export.
 
 Serve `glorialan-media` through a **custom domain on the bucket** instead:
 

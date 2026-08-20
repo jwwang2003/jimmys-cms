@@ -3,8 +3,8 @@
 - Built using the NextJS Framework
     > This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 - Mantine UI
-- Amazon AWS
-    - S3 Buckets (for storing static content)
+- Cloudflare R2 for binary storage, reached through the S3-compatible API
+    - `masters` (private originals) · `media` (public derivatives behind a custom domain) · `backups` (litestream)
 - Hosted on DigitalOcean
 - Testing framework(s):
     - Jtest
@@ -15,14 +15,10 @@
 
 ## Getting Started
 
-Create a local env file first:
+Create a local env file first, then fill in the R2 credentials (account id +
+per-bucket tokens — see the R2 section of `.env.example`):
 ```bash
 cp .env.example .env.local
-```
-
-Set up your local AWS environment:
-```bash
-aws configure
 ```
 
 ### Development
@@ -88,13 +84,20 @@ pnpm start
 pnpm build
 ```
 
-## Amazon AWS
+## Storage — Cloudflare R2
 
-So far the only AWS service used are the S3 buckets.
+Binary objects live in Cloudflare R2; SQLite only tracks metadata. R2 speaks
+the S3 API, so the app reaches it with the AWS SDK pointed at the account
+endpoint — configuration is env-only (`R2_ACCOUNT_ID` plus per-bucket
+`R2_BUCKET_<ALIAS>` / `R2_ACCESS_KEY_ID_<ALIAS>` tokens; see `.env.example`).
+Three buckets: private `masters` (originals, reached only via short-lived
+presigned URLs), public `media` (derivatives behind `media.jwwang.ca`), and
+private `backups` (litestream replication target). Bucket setup, CORS, and
+token scoping are documented in `DOCUMENTATION/deployment.md`.
 
-- Ensure that AWS CLI is installed a login via SSO \(Access key & Secret access key\). Refer to the following links:
-    - [Install AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
-    - [Logging in via the CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html)
+Any other S3-compatible endpoint can be declared the long way with
+`S3_BUCKET_<ALIAS>` + `S3_ENDPOINT_<ALIAS>` — nothing in the app is
+AWS-specific.
 
 ## Simple CMS Login
 
@@ -128,8 +131,8 @@ manual geocode refreshes will route Google Maps requests through that proxy.
 
 ## Media Library Schema
 
-All CMS media metadata is modeled with Drizzle (see `src/db/schema/schema.ts`). The binary objects live in S3, while SQLite only
-tracks metadata and relationships:
+All CMS media metadata is modeled with Drizzle (see `src/db/schema/schema.ts`). The binary objects live in R2 (any
+S3-compatible store works), while SQLite only tracks metadata and relationships:
 
 - `storage_locations` keeps the known bucket aliases, regions, and CDN base URLs.
 - `media_assets` represents every uploaded file (images, videos, docs, etc.) along with S3 keys, MIME type, dimensions, duration,
@@ -142,8 +145,8 @@ tracks metadata and relationships:
 - `collections` and `collection_assets` let you curate playlists/boards tied to assets.
 - `asset_locations` stores normalized geolocation records for assets, preserving imported address text and primary-location state.
 
-These tables are intentionally metadata-only. Each row references the S3 object via `storage_id` + `object_key`, so multiple
-frontends can render content while S3 holds the raw binaries.
+These tables are intentionally metadata-only. Each row references the stored object via `storage_id` + `object_key`, so multiple
+frontends can render content while the bucket holds the raw binaries.
 
 ## Admin Routes
 

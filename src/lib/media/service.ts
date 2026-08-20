@@ -168,7 +168,11 @@ export async function uploadMediaAsset(input: {
     mimeType?: string | null;
     createdBy?: string | null;
 }) {
-    const storageId = input.storageId || "default";
+    // Uploads are originals, and originals live in the private masters bucket.
+    // The old "default" alias only exists when the legacy S3_BUCKET env is
+    // set, so falling back to it on an R2-only deployment threw on the first
+    // upload.
+    const storageId = input.storageId || "masters";
     const prefix = input.prefix || "media";
     const mediaTypeHint = determineManagedMediaType(input.fileName, input.mimeType);
     const key = buildManagedObjectKey(mediaTypeHint, input.fileName, prefix, input.path);
@@ -268,7 +272,9 @@ export async function syncS3Prefix(input: {
     createAssets?: boolean;
     onProgress?: (done: number, key: string) => void;
 }) {
-    const storageId = input.storageId || "default";
+    // Same rationale as uploadMediaAsset: the sync workspace targets the
+    // masters bucket unless the caller says otherwise.
+    const storageId = input.storageId || "masters";
     const { client, bucket } = getS3(storageId);
     const prefixValue = input.rawPrefix ?? buildKey(input.prefix || "media", input.path || "");
 

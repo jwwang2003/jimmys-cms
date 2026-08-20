@@ -187,24 +187,6 @@ export function getS3(alias = "default"): {
     };
 }
 
-// Back-compat single client (uses default region)
-export const s3 = new S3Client({ region: region || undefined });
-
-// CloudFront distribution ids.
-// Legacy: the CMS originally targeted AWS S3 + CloudFront. Cloudflare R2 with a
-// custom domain on the bucket serves the same role now (see cms-plan.md §3), so
-// these stay only for buckets that are still behind CloudFront.
-export const cfDistId = process.env.CLOUDFRONT_DISTRIBUTION_ID || "";
-export const cfDistributions: Record<string, string> = (() => {
-    const out: Record<string, string> = {};
-    if (cfDistId) out["default"] = cfDistId;
-    for (const [envKey, envVal] of Object.entries(process.env)) {
-        const m = envKey.match(/^CLOUDFRONT_DISTRIBUTION_ID_([A-Z0-9_]+)$/);
-        if (m && envVal) out[m[1].toLowerCase()] = envVal;
-    }
-    return out;
-})();
-
 // Helper to build a namespaced key with a known prefix
 export function buildKey(prefix: keyof typeof prefixes, ...parts: string[]) {
     const p = prefixes[prefix];

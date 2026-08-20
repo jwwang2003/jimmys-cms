@@ -43,7 +43,7 @@ export async function POST(request: Request) {
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     const asset = await uploadMediaAsset({
-        storageId: String(form.get("storageId") || "default"),
+        storageId: String(form.get("storageId") || "masters"),
         prefix: (String(form.get("prefix") || "media") as "content" | "media" | "public" | "meta"),
         path: String(form.get("path") || ""),
         fileName: file.name,
