@@ -116,9 +116,11 @@ export function collectPublishableAssets(options?: { includeDrafts?: boolean }):
             typeof spreadsheet.country === "string" ? spreadsheet.country : null
         );
 
-        // uid is the stable public identity. The slug is derived from the
-        // title and can change when a title is corrected; the object key
-        // cannot, so it anchors the uid.
+        // uid is the asset's public identity: rendition keys are built from it
+        // and published under a one-year immutable cache, so it has to be
+        // stable for the life of the asset. The slug fills that role and is
+        // assigned once at creation — importing a title never re-slugs, which
+        // is what keeps this safe to embed in permanent URLs.
         const uid = row.slug;
 
         const asset = {

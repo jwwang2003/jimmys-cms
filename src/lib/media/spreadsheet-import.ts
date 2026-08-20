@@ -314,8 +314,17 @@ function ensureCollection(db: SpreadsheetDb, name: string) {
 
 function replaceAssetTags(db: SpreadsheetDb, assetId: number, tags: string[]) {
     db.delete(mediaTags).where(eq(mediaTags.assetId, assetId)).run();
+    // Dedupe on the resolved id, not the input string. Callers merge the tags
+    // already stored (which are slugs) with the spreadsheet's (which are
+    // labels), so "coffee-shop" and "coffee shop" arrive as distinct strings
+    // and survive a string-level dedupe, but ensureTag slugifies and hands back
+    // one id for both — a duplicate (asset_id, tag_id) and a primary key
+    // violation on every re-import.
+    const seen = new Set<number>();
     for (const tag of tags) {
         const tagId = ensureTag(db, tag);
+        if (seen.has(tagId)) continue;
+        seen.add(tagId);
         db.insert(mediaTags).values({ assetId, tagId, appliedAt: now() }).run();
     }
 }
@@ -651,9 +660,16 @@ function updateAssetMetadataJson(db: SpreadsheetDb, assetId: number, row: Parsed
         .run();
 }
 
-function updateAssetBasics(db: SpreadsheetDb, asset: IndexedAsset, row: ParsedMetadataRow, options?: AppliedMetadataOptions) {
-    if (!row.title && !row.description && !options?.titleOverride) return;
+/**
+ * A title the storage sync invented from the master's filename, e.g.
+ * `001+Casamar+2019 04 19` or `016-020+watercolor shops+2021 07 25`. These are
+ * placeholders, not authored titles, and they are safe to replace.
+ */
+function looksFilenameDerived(title: string) {
+    return /^\d{1,4}[-+]/.test(title.trim());
+}
 
+function updateAssetBasics(db: SpreadsheetDb, asset: IndexedAsset, row: ParsedMetadataRow, options?: AppliedMetadataOptions) {
     const current = db
         .select({ title: mediaAssets.title, description: mediaAssets.description })
         .from(mediaAssets)
@@ -661,13 +677,26 @@ function updateAssetBasics(db: SpreadsheetDb, asset: IndexedAsset, row: ParsedMe
         .get();
     if (!current) return;
 
-    const nextTitle = options?.titleOverride?.trim() || row.title?.trim() || current.title;
+    // Neither spreadsheet has a title column, so an asset synced from storage
+    // keeps its filename-derived placeholder unless something supplies a better
+    // one. The place, then the city, is what the published catalog should show
+    // — and is what the site's own catalog uses.
+    const derivedTitle = looksFilenameDerived(current.title)
+        ? row.locationLabel?.trim() || row.city?.trim() || ""
+        : "";
+
+    const nextTitle = options?.titleOverride?.trim() || row.title?.trim() || derivedTitle || current.title;
     const nextDescription = row.description?.trim() || current.description;
+
+    if (nextTitle === current.title && (nextDescription || null) === current.description) return;
 
     db.update(mediaAssets)
         .set({
             title: nextTitle,
-            slug: buildUniqueSlug(db, nextTitle, asset.id),
+            // The slug deliberately does not follow the title. It is the asset's
+            // public identity: rendition keys are built from it and published
+            // under a one-year immutable cache, so re-slugging on a title
+            // correction would orphan every derivative the asset already has.
             description: nextDescription || null,
             updatedAt: now(),
         })
