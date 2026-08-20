@@ -54,8 +54,9 @@ values — this file is **never** written by CI (CI only appends/updates the
 SESSION_SECRET=<long random, e.g. openssl rand -hex 32>
 ADMIN_USERNAME=...
 ADMIN_PASSWORD=<long random>
-AUTH_BASE_URL=https://cms.jwwang.ca
-AUTH_TRUSTED_ORIGINS=https://cms.jwwang.ca
+# Multi-portal: leave AUTH_BASE_URL / NEXT_PUBLIC_AUTH_BASE_URL unset
+# (same-origin) and list EVERY portal hostname here.
+AUTH_TRUSTED_ORIGINS=https://cms.jwwang.ca,https://cms.glorialan.com
 
 R2_ACCOUNT_ID=...
 R2_BUCKET_MASTERS=jimmys-cms-masters
@@ -75,18 +76,53 @@ installing Caddy would conflict. The CMS gets a vhost in the same pattern
 (`deploy/Caddyfile` remains as the alternative for a fresh box):
 
 ```bash
-sudo cp deploy/nginx/cms.jwwang.ca.conf /etc/nginx/sites-available/cms.jwwang.ca
-sudo ln -s /etc/nginx/sites-available/cms.jwwang.ca /etc/nginx/sites-enabled/
+sudo cp deploy/nginx/cms.conf /etc/nginx/sites-available/cms
+sudo ln -s /etc/nginx/sites-available/cms /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d cms.jwwang.ca -d cms.glorialan.com
 ```
+
+Certbot renews automatically (`certbot.timer` runs twice daily and reloads
+nginx after a renewal) — no manual cert maintenance.
+
+### Multi-portal: every hostname serves the CMS directly
+
+`cms.jwwang.ca` and `cms.glorialan.com` are both first-class portals — one
+nginx block, one cert covering both names, no canonical redirect. The
+accepted tradeoff: sessions are per-domain (different registrable domains
+cannot share a cookie — a browser rule, not an app choice), so each portal
+has its own independent login.
+
+Config that makes this work:
+
+- `AUTH_BASE_URL` and `NEXT_PUBLIC_AUTH_BASE_URL` stay **unset** — empty
+  means same-origin, so each portal talks to itself. Pinning either to one
+  hostname would send the other portal's browser cross-origin, where its
+  cookie won't follow.
+- `AUTH_TRUSTED_ORIGINS` lists **every** portal hostname.
+- nginx forwards `Host` per-request, so Next's server-action origin check
+  and all relative redirects behave identically on every portal.
+
+#### Adding portal hostname N+1
+
+1. **DNS**: point `cms.<new-domain>` at `146.190.246.3` (Cloudflare proxied
+   is fine; SSL mode Full (strict) in that zone).
+2. **nginx**: append the hostname to both `server_name` lines in
+   `/etc/nginx/sites-available/cms`.
+3. **Cert**: re-run certbot listing **every** name so the one cert expands:
+   `sudo certbot --nginx --expand -d cms.jwwang.ca -d cms.glorialan.com -d cms.<new-domain>`
+   then `sudo nginx -t && sudo systemctl reload nginx`.
+4. **App**: append `https://cms.<new-domain>` to `AUTH_TRUSTED_ORIGINS` in
+   `/opt/jimmys-cms/.env`, then `docker compose up -d cms`.
+
+No image rebuild is needed — trusted origins are read at runtime.
 
 ### Cloudflare sits in front
 
 `cms.jwwang.ca` and `cms.glorialan.com` currently resolve to Cloudflare's
 proxy (orange cloud). That means:
 
-- Point both DNS records at `146.190.246.3`. Set the zone's SSL mode to
+- Point both DNS records at `146.190.246.3`. Set **each zone's** SSL mode to
   **Full (strict)** once the certbot cert exists; if the `--nginx` HTTP-01
   challenge fails through the proxy, grey-cloud the record for a minute,
   issue, then re-enable.
@@ -103,13 +139,15 @@ proxy (orange cloud). That means:
 | `DROPLET_HOST` | secret | `146.190.246.3` |
 | `DROPLET_USER` | secret | `wjw` |
 | `DROPLET_SSH_KEY` | secret | private half of a keypair generated just for CI; public half appended to `~wjw/.ssh/authorized_keys` |
-| `NEXT_PUBLIC_AUTH_BASE_URL` | variable | `https://cms.jwwang.ca` |
+| `NEXT_PUBLIC_AUTH_BASE_URL` | variable | **leave empty / don't create** — empty inlines a same-origin auth client, which multi-portal serving requires. Only set it when pinning a single canonical hostname. |
 
 `GITHUB_TOKEN` is automatic — it both pushes to GHCR and is forwarded over SSH
 so the droplet can `docker login` for the pull. No PAT needed.
 
 `NEXT_PUBLIC_*` is a **build arg**, not a runtime env: Next inlines it into the
-client bundle, so it must be set when the image is built.
+client bundle at image-build time. In the multi-portal setup it stays empty on
+purpose (same-origin client); if you ever pin a canonical hostname instead, a
+change to this variable needs a rebuild, not just a redeploy.
 
 ## Rollback
 

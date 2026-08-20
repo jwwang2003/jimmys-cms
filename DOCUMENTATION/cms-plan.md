@@ -218,36 +218,30 @@ Both hostnames, one instance. The CMS **must** be self-hosted: SQLite needs a
 persistent filesystem, the derive jobs are long-running, and the SSE progress
 stream needs a real connection. None of that fits a serverless platform.
 
-### 5.1 Pick a canonical host
+### 5.1 Portal hostnames — decision revised (2026-08-19)
 
-Recommended: **`cms.jwwang.ca` canonical, `cms.glorialan.com` 301-redirects to it.**
+**Decision: every portal hostname serves the CMS directly.** The original
+recommendation (canonical host + 301) is superseded — both names are
+first-class portals, and the setup is deliberately n+1-able: a new portal
+hostname is a DNS record, a `server_name` entry, a `certbot --expand`, and an
+`AUTH_TRUSTED_ORIGINS` append (see DOCUMENTATION/deployment.md, "Adding
+portal hostname N+1"). No rebuild.
 
-Serving both hostnames directly works, but session cookies are per-domain — a
-login on one host is not a login on the other, and Better Auth's CSRF origin
-checks have to trust both. That is two auth surfaces for one admin panel, for no
-benefit. A redirect gives you "both URLs work" with one session domain.
-
-Use `cms.jwwang.ca` as canonical if the CMS is personal infrastructure serving
-more than this one site; use `cms.glorialan.com` if it is conceptually part of
-the site. Either is defensible — just pick one and be consistent.
+The cost stated below still holds and is accepted: session cookies are
+per-domain (the portals sit on different registrable domains, so no cookie
+can span them) — each portal has its own independent login. What makes the
+multiple auth surfaces safe is same-origin config: with `AUTH_BASE_URL` and
+`NEXT_PUBLIC_AUTH_BASE_URL` unset, every portal talks only to itself, and
+`AUTH_TRUSTED_ORIGINS` enumerates the portals for the CSRF origin check.
 
 ### 5.2 DNS and TLS
 
-Both records point at the same host. Caddy is the least-effort reverse proxy
-here because it provisions and renews certificates for both names automatically:
-
-```caddyfile
-cms.jwwang.ca {
-    reverse_proxy localhost:3000
-}
-
-cms.glorialan.com {
-    redir https://cms.jwwang.ca{uri} permanent
-}
-```
-
-If you serve both directly instead, replace the second block with the same
-`reverse_proxy` line and complete §5.3 carefully.
+All records point at the same host. On the real droplet (do0) nginx + certbot
+own 80/443, so the CMS vhost is `deploy/nginx/cms.conf` — one server block
+listing every portal in `server_name`, one certbot cert covering all names,
+auto-renewed by `certbot.timer`. On a fresh box, `deploy/Caddyfile` is the
+equivalent (one address line listing every portal; Caddy provisions certs
+itself).
 
 **Do not expose this publicly without cause.** The CMS needs outbound access to
 R2 and one webhook; it needs no inbound access from anyone but you. Prefer a
@@ -257,18 +251,21 @@ project needs.
 
 ### 5.3 Application config
 
-- [ ] `AUTH_BASE_URL=https://cms.jwwang.ca`, read by `src/lib/auth.ts` and
-      `src/lib/auth-client.ts` (which currently hardcodes localhost)
-- [ ] Better Auth `trustedOrigins` must list **every** hostname that will reach
-      the app — both, if you serve both
+- [x] `AUTH_BASE_URL` / `NEXT_PUBLIC_AUTH_BASE_URL` stay **unset** for
+      multi-portal (same-origin); `src/lib/auth-client.ts` falls back to a
+      same-origin client when the var is empty (the old localhost hardcode is
+      gone)
+- [x] Better Auth `trustedOrigins` must list **every** portal hostname —
+      `AUTH_TRUSTED_ORIGINS` in the droplet `.env`
 - [ ] Session cookies: `Secure`, `HttpOnly`, `SameSite=Lax`
 - [ ] Docker compose needs two volumes: one for the SQLite file, one for
       `.next/cache`
 - [ ] Litestream replicating the SQLite file to R2 — the database is as
       irreplaceable as the masters, and a file copy is the whole backup story
 
-**Done when:** both hostnames resolve over HTTPS with valid certificates, one
-redirects to the other, and a login survives a container restart.
+**Done when:** every portal hostname resolves over HTTPS with a valid
+certificate, serves the CMS directly, accepts its own login, and a login
+survives a container restart.
 
 ---
 
@@ -302,7 +299,7 @@ proves the ledger is correct — either one alone can pass with a broken diff.
 | Public admin panel | §5.2 — VPN, Tunnel, or allowlist. Do not rely on the password alone. |
 | SQLite is the only copy of the catalog | Litestream to R2 from day one |
 | Hand-rolled EXIF parser meets an unknown format | Its 291-line test suite is load-bearing; treat failures as blocking |
-| Two hostnames, two session domains | §5.1 — canonical + redirect avoids the problem entirely |
+| N portal hostnames, N session domains | §5.1 revised — accepted: per-portal logins, same-origin auth, every portal in `AUTH_TRUSTED_ORIGINS` |
 | Derivative model diverges from the site's | §4 note — settle one model before stage 6 of the site plan |
 | A missed revalidate leaves the site stale | Long time-based revalidate as a backstop, plus a rebuild-all admin action |
 
