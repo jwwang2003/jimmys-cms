@@ -243,13 +243,21 @@ Checklist in the Cloudflare dashboard:
    ```json
    [
      {
-       "AllowedOrigins": ["https://cms.jwwang.ca", "http://localhost:3000"],
+       "AllowedOrigins": [
+         "https://cms.jwwang.ca",
+         "https://cms.glorialan.com",
+         "http://localhost:3000"
+       ],
        "AllowedMethods": ["PUT"],
        "AllowedHeaders": ["Content-Type"],
        "MaxAgeSeconds": 3600
      }
    ]
    ```
+
+   Every portal hostname belongs in `AllowedOrigins` — uploads start from
+   whichever portal the editor is signed into. Portal N+1 therefore has a
+   fifth step: add the new origin here too.
 
 2. **Media bucket**: connect the custom domain (`media.jwwang.ca`) and leave
    the `*.r2.dev` development URL **disabled**. The custom domain rides
